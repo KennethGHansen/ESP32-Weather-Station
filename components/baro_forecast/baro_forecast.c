@@ -96,10 +96,10 @@ static bool ring_delta(const float *hist, uint16_t len, uint16_t idx, bool full,
 
 static const char* absolute_bucket(float p_hpa)
 {
-    if (p_hpa >= ABS_HIGH_HPA)   return "High pressure (fair)";
-    if (p_hpa >= ABS_NORMAL_HPA) return "Normal range (stable)";
-    if (p_hpa >= ABS_LOW_HPA)    return "Low pressure (unsettled)";
-    return "Very low pressure (storm conditions likely)";
+    if (p_hpa >= ABS_HIGH_HPA)   return "Beautiful (High)";
+    if (p_hpa >= ABS_NORMAL_HPA) return "Fair (Normal)";
+    if (p_hpa >= ABS_LOW_HPA)    return "Unsettled (Low)";
+    return "Stormy (Very Low)";
 }
 
 static baro_trend_t trend_from_delta_3h(float d3h)

@@ -1,1 +1,1 @@
-idf_component_register(SRCS "main_app.c" INCLUDE_DIRS "." REQUIRES st7789h2)   
+idf_component_register(SRCS "main_app.c" INCLUDE_DIRS "." REQUIRES st7789h2 baro_forecast bme68x esp_timer)   

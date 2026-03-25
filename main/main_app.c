@@ -1,25 +1,24 @@
 /**
  * @file main_app.c
  *
- * @brief Example application for SEN-BME680 on ESP32-S3 using I2C.
+ * @brief This is the main code for my Weather Station project. The project will be controlled with branches in GitHub.
  *
- * Reads Temperature, Humidity, Pressure, and Gas Resistance once per second.
- *
- * IMPORTANT ADDRESS NOTE (SEN-BME680):
- *  - Default I2C address is 0x77
- *  - If SDO/SD0 is connected to GND, address becomes 0x76 [4](https://www.lemona.lt/Files/Instrukcijos/TI/En/Pdf/SEN-BME680_Manual_2024-04-11.pdf)[5](https://manuals.plus/m/6cc51db035a76a96781c7acc7012f2a1599df6fa0bae932b05a5e047f1d2277b_optim.pdf)
  */
 
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_err.h"
+#include "esp_timer.h"
 
 // Component includes
 #include "baro_forecast.h"
 #include "bme68x_esp32_i2c.h"
+#include "st7789h2.h"
 
-static const char *TAG = "main_app";
+static const char *TAG = "main_app"; //For generating test strings
+static int64_t gas_start_us = 0; // Timer start condition for gas warmup
 
 /* -------------------------------------------------------------------------- */
 /* User configuration section                                                  */
@@ -31,36 +30,6 @@ static const char *TAG = "main_app";
 #define I2C_PORT        I2C_NUM_0
 #define I2C_SDA_GPIO    GPIO_NUM_8
 #define I2C_SCL_GPIO    GPIO_NUM_9
-
-/**
- * Temperature offset for more correct amvbient temperature reading
- * Needed as Gas measurement is a small on chip heater. Generally -4,5C is usable for Heater at 320 °C / 150 ms, 1 Hz sampling
- */
-// Example: dynamic temperature offset for BME680 self‑heating
-// Idea: more heater influence → larger offset, less influence → smaller offset
-// Tunable parameters, for a more correct temperature measurement
-#define BOARD_TEMP_OFFSET_C  (-2.5f)   // Expected board temperature constant offset
-#define BASE_OFFSET_C        (-2.0f)   // minimum offset (heater influence low)
-#define MAX_EXTRA_OFFSET_C   (-3.0f)   // additional offset when heater influence is high
-#define GAS_REF_OHMS         (100000.0f) // reference “clean air” resistance
-float compute_dynamic_temp(float raw_temp_c, float gas_ohms); // Function for calculating the temperature offset
-
-/**
- * Warmup time for the Gas measurements. We need to ignore the data for ~30 minutes for stable data to be used
- * For calculating a stable air‑quality interpretation
- */
-#define GAS_WARMUP_TIME_SEC   (30 * 60)   // Gas warmup time (30 minutes is a good amount)
-#define GAS_BASELINE_ALPHA   0.01f        // running average weight (slow & stable)
-static uint32_t uptime_seconds = 0;       // Warmup counter (1 second increment @ 1 Hz delay)
-static bool gas_baseline_ready = false;   // Used to check for warmup period
-static float gas_baseline = 0.0f;         // Ω
-float gas_ratio = 0.0f;                   // Ratio determining a level of air quality
-const char *air_quality;                  // Holding different "Air quailities" that relate to the gas ratio (set to pointer so only text strings can be used)
-
-/**
- * State object for the barometer forcast algoritm
-*/
-static baro_forecast_t g_baro;
 
 /**
  * I2C bus speed:
@@ -95,9 +64,72 @@ static esp_err_t init_at_addr(uint8_t addr)
 
     return ESP_OK;
 }
+    /**
+    * SPI Setup for the display XNUCLEO-GFX01M2
+    */
+    st7789h2_config_t cfg_disp = {
+        .host = SPI2_HOST,
+
+        // SPI2 IO_MUX defaults on ESP32-S3: CS0=10 MOSI=11 SCLK=12 MISO=13 [1](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/spi_master.html)
+        .pin_cs   = 10,
+        .pin_mosi = 11,
+        .pin_sclk = 12,
+        .pin_miso = -1,   // LCD is write-only here; set to 13 if you actually wire MISO
+
+        // Use the remaining SPI2 IO_MUX “quad” pins as GPIO for LCD control:
+        .pin_dc   = 46,    // GPIO pin 46 used as DC (transferred from GPIO 9 to make room for I2C)
+        .pin_rst  = 14,   // QUADWP pin used as RST
+        .pin_bckl = -1,   // set to a GPIO if you control backlight
+
+        .spi_clock_hz = 10 * 1000 * 1000, // start at 10MHz, increase later
+        .spi_mode     = 0,
+
+        .width    = 240,
+        .height   = 320,
+        .x_offset = 0,
+        .y_offset = 0,
+    };
+    
+
+
+/**
+ * Temperature offset for more correct amvbient temperature reading
+ * Needed as Gas measurement is a small on chip heater. Generally -4,5C is usable for Heater at 320 °C / 150 ms, 1 Hz sampling
+ */
+// Example: dynamic temperature offset for BME680 self‑heating
+// Idea: more heater influence → larger offset, less influence → smaller offset
+// Tunable parameters, for a more correct temperature measurement
+#define BOARD_TEMP_OFFSET_C  (-3.5f)   // Expected board temperature constant offset (Tune if constant offset is used)
+#define BASE_OFFSET_C        (-2.0f)   // minimum offset (heater influence low)
+#define MAX_EXTRA_OFFSET_C   (-3.0f)   // additional offset when heater influence is high
+#define GAS_REF_OHMS         (100000.0f) // reference “clean air” resistance
+float compute_dynamic_temp(float raw_temp_c, float gas_ohms); // Function for calculating the temperature offset
+
+/**
+ * Warmup time for the Gas measurements. We need to ignore the data for ~30 minutes for stable data to be used
+ * For calculating a stable air‑quality interpretation
+ */
+#define GAS_WARMUP_TIME_SEC   (30 * 60)   // Gas warmup time (30 minutes is a good amount)
+#define GAS_BASELINE_ALPHA   0.01f        // running average weight (slow & stable)
+static uint32_t uptime_seconds = 0;       // Warmup counter (1 second increment @ 1 Hz delay)
+static bool gas_baseline_ready = false;   // Used to check for warmup period
+static float gas_baseline = 0.0f;         // Ω
+float gas_ratio = 0.0f;                   // Ratio determining a level of air quality
+const char *air_quality;                  // Holding different "Air quailities" that relate to the gas ratio (set to pointer so only text strings can be used)
+
+/**
+ * State object for the barometer forcast algoritm
+*/
+static baro_forecast_t g_baro;
 
 void app_main(void)
-{
+{  
+    /*
+    * Display init
+    */ 
+    ESP_ERROR_CHECK(st7789h2_init(&cfg_disp));
+    st7789h2_fill(0x0000); //Fill the display background black once
+
     /* The SEN-BME680 manual states default I2C address is 0x77,
      * but it can be changed to 0x76 by wiring SDO to GND. [4](https://www.lemona.lt/Files/Instrukcijos/TI/En/Pdf/SEN-BME680_Manual_2024-04-11.pdf)[5](https://manuals.plus/m/6cc51db035a76a96781c7acc7012f2a1599df6fa0bae932b05a5e047f1d2277b_optim.pdf)
      *
@@ -117,18 +149,36 @@ void app_main(void)
     ESP_LOGI(TAG, "Starting 1 Hz sampling loop...");
 
     // Configure barometer settings
-    baro_config_t cfg = {
+    baro_config_t cfg_baro = {
     .altitude_m = 80.0f,                 // <-- set your elevation here (~80 meter @ home in Højbjerg)
     .sample_period_s = 60,              // store 1 sample / minute
     .ema_alpha = 0.05f,                 // smoothing (tweak 0.02..0.10)
     .enable_sea_level_correction = true // use SLP for buckets/trends
     };
-    baro_forecast_init(&g_baro, &cfg);
+    baro_forecast_init(&g_baro, &cfg_baro);
+
+    gas_start_us = esp_timer_get_time(); // microseconds since boot
 
     while (1) {
-        struct bme68x_data data;
-        uptime_seconds++;  // Timer for the gas measurement warmup (increments close to every second as tick read is set to this)
 
+        ///*
+        //* Simple display test in conjunction with sensor code running
+        //*/
+        //st7789h2_draw_string_scaled(
+        //50, 50,
+        //"Hello World!\n\nJust a Test\n\nTo see\n\nIf it works",
+        //0xFFFF, 0x0000, 2
+        // );
+
+        // Display write setup
+        uint8_t scale = 2;
+        uint16_t line_height = 8 * (scale+2);  // Seems to be a good line distance
+        uint16_t y_pos = 5;
+        uint16_t x_pos = 25;
+        char buf[64];
+
+        struct bme68x_data data;
+      
         /* Perform one forced-mode measurement.
          * In forced mode, the sensor runs one TPHG measurement cycle and returns to sleep. [3](https://esp-idf-lib.readthedocs.io/en/latest/groups/bme680.html)
          */
@@ -150,9 +200,22 @@ void app_main(void)
                      data.status);
 
             // Ambient temperature is the raw temperature offset using the gas resistance and the board temp static offset
-            float ambient_temp = compute_dynamic_temp(data.temperature, data.gas_resistance) + BOARD_TEMP_OFFSET_C;
+            // (Dynamic temp function is not used here as it had some problems with startup gas changes)
+            //float ambient_temp = compute_dynamic_temp(data.temperature, data.gas_resistance) + BOARD_TEMP_OFFSET_C;
+            float ambient_temp = data.temperature + BOARD_TEMP_OFFSET_C;
+            
             ESP_LOGI(TAG, "Ambient Temp = %.2f °C", ambient_temp);
+            
+            //Write data to display (test write functions for now!)  
+            // Display Ambient temperature
+            snprintf(buf, sizeof(buf), "Temp: %.1f °C", ambient_temp);
+            st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);
+            y_pos += line_height;
 
+            // Display Relative humidity
+            snprintf(buf, sizeof(buf), "Hum: %.1f %%RH", data.humidity);
+            st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);
+            y_pos += line_height;
 
             // Barometer forecast evaluation
             baro_forecast_update_pa(&g_baro, data.pressure);
@@ -164,6 +227,26 @@ void app_main(void)
                     baro_forecast_slp_hpa(&g_baro),
                     baro_forecast_text(&g_baro),
                     storm_level_str(baro_forecast_storm_level(&g_baro)));
+
+            // Display Sea level pressure
+            snprintf(buf, sizeof(buf), "SLP: %.0f hPa", baro_forecast_slp_hpa(&g_baro));
+            st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);
+            y_pos += line_height;
+            y_pos += line_height;        
+            
+            //Display Forcast
+            st7789h2_draw_string_scaled(x_pos, y_pos, "Forcast: ", 0xFFFF, 0x0000, scale);
+            y_pos += line_height;
+            snprintf(buf, sizeof(buf), baro_forecast_text(&g_baro));
+            st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);
+            y_pos += line_height;
+
+            //Display Alert
+            st7789h2_draw_string_scaled(x_pos, y_pos, "Alert: ", 0xFFFF, 0x0000, scale);
+            y_pos += line_height;
+            snprintf(buf, sizeof(buf), storm_level_str(baro_forecast_storm_level(&g_baro)));
+            st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);   
+            y_pos += line_height;
 
             /* Once enough history exists, also log deltas */
             if (baro_forecast_ready_1h(&g_baro)) {
@@ -187,22 +270,35 @@ void app_main(void)
         }
         
         // This function ensures that no gas sensor data is displayed before 30 minute warmup
+        int64_t elapsed_sec = (esp_timer_get_time() - gas_start_us) / 1000000;
+
         if (!gas_baseline_ready) {
-            if (uptime_seconds >= GAS_WARMUP_TIME_SEC) {
+            if (elapsed_sec >= GAS_WARMUP_TIME_SEC) {
                 // First valid baseline initialization
                 gas_baseline = data.gas_resistance;
                 gas_baseline_ready = true;
 
                 ESP_LOGI(TAG, "Gas sensor warm-up complete. Baseline initialized: %.0f Ω",
                         gas_baseline);
+                
+
             } else {
                 // Still warming up
                 ESP_LOGI(TAG,
-                        "Warming up gas sensor... %u / %u seconds",
+                        "Warming up... %u / %u seconds",
                         uptime_seconds,
                         GAS_WARMUP_TIME_SEC);
+
+                // Display "Warming up gas sensor"
+                st7789h2_draw_string_scaled(x_pos, y_pos, "Air Quality:", 0xFFFF, 0x0000, scale);
+                y_pos += line_height;
+                st7789h2_draw_string_scaled(x_pos, y_pos, "Warming up...", 0xFFFF, 0x0000, scale);
+                if (elapsed_sec >= GAS_WARMUP_TIME_SEC){
+                    st7789h2_draw_string_scaled(x_pos, y_pos, "              ", 0xFFFF, 0x0000, scale); //Clear display line
+                }
             }
         }
+    
         if (gas_baseline_ready){
         // Exponential moving average (EMA)
         gas_baseline = (1.0f - GAS_BASELINE_ALPHA) * gas_baseline + GAS_BASELINE_ALPHA * data.gas_resistance;
@@ -211,14 +307,23 @@ void app_main(void)
         if (gas_ratio < 0.9f)
             air_quality = "Very clean";
         else if (gas_ratio < 1.1f)
-            air_quality = "Normal";
+            air_quality = "Normal Quality";
         else if (gas_ratio < 1.5f)
             air_quality = "Polluted";
         else
             air_quality = "Very polluted";
 
         ESP_LOGI(TAG, "Air = %s", air_quality);
-        }
+
+        //Write to display 
+        st7789h2_draw_string_scaled(x_pos, y_pos, "Air Quality:", 0xFFFF, 0x0000, scale);
+        y_pos += line_height;     
+
+        // Air Quality
+        snprintf(buf, sizeof(buf), air_quality);
+        st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);  
+
+        } 
     /* Wait 1 second between updates */
     vTaskDelay(pdMS_TO_TICKS(1000));
     }
