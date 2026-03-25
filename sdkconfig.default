@@ -1,0 +1,14 @@
+#
+# Keep this file small: only override what you care about.
+# ESP-IDF will generate full sdkconfig from defaults + menuconfig choices. [8](https://docs.espressif.com/projects/esp-idf/en/release-v3.3/api-reference/kconfig.html)[9](https://docs.espressif.com/projects/idf-build-apps/en/latest/explanations/config_rules.html)
+#
+
+# Serial monitor baud rate (idf.py monitor uses this)
+CONFIG_ESPTOOLPY_MONITOR_BAUD=115200
+
+# Reduce surprises with SPI LCD + flash ops by not forcing SPI master ISR into IRAM
+# (avoids cache-disabled panic scenarios reported by users when LCD/SPI paths aren’t IRAM-safe). [6](https://github.com/espressif/esp-idf/issues/10698)[7](https://esp32.com/viewtopic.php?t=25454)
+CONFIG_SPI_MASTER_ISR_IN_IRAM=n
+
+# Log level (optional)
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
