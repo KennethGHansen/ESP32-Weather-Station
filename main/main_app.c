@@ -21,8 +21,16 @@ static const char *TAG = "main_app"; //For generating test strings
 static int64_t gas_start_us = 0; // Timer start condition for gas warmup
 
 /* -------------------------------------------------------------------------- */
-/* User configuration section                                                  */
+/* User configuration section                                                 */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Font setup for display writing
+ */
+#define FONT_W 7   // pixels per character at scale=1 (check your font!)
+#define FONT_H 5
+
+
 /**
  * Choose I2C pins that match your wiring on the ESP32S3-DEVKITC.
  * ESP32-S3 allows flexible pin routing for I2C, so you may use other GPIOs.
@@ -159,26 +167,17 @@ void app_main(void)
 
     gas_start_us = esp_timer_get_time(); // microseconds since boot
 
+
     while (1) {
-
-        ///*
-        //* Simple display test in conjunction with sensor code running
-        //*/
-        //st7789h2_draw_string_scaled(
-        //50, 50,
-        //"Hello World!\n\nJust a Test\n\nTo see\n\nIf it works",
-        //0xFFFF, 0x0000, 2
-        // );
-
         // Display write setup
         uint8_t scale = 2;
         uint16_t line_height = 8 * (scale+2);  // Seems to be a good line distance
-        uint16_t y_pos = 5;
+        uint16_t y_pos = 10;
         uint16_t x_pos = 25;
-        char buf[64];
+        char buf[64];  
 
         struct bme68x_data data;
-      
+  
         /* Perform one forced-mode measurement.
          * In forced mode, the sensor runs one TPHG measurement cycle and returns to sleep. [3](https://esp-idf-lib.readthedocs.io/en/latest/groups/bme680.html)
          */
@@ -203,14 +202,23 @@ void app_main(void)
             // (Dynamic temp function is not used here as it had some problems with startup gas changes)
             //float ambient_temp = compute_dynamic_temp(data.temperature, data.gas_resistance) + BOARD_TEMP_OFFSET_C;
             float ambient_temp = data.temperature + BOARD_TEMP_OFFSET_C;
-            
             ESP_LOGI(TAG, "Ambient Temp = %.2f °C", ambient_temp);
             
-            //Write data to display (test write functions for now!)  
-            // Display Ambient temperature
-            snprintf(buf, sizeof(buf), "Temp: %.1f °C", ambient_temp);
+            //Write data to display (test write functions for now!)
+            
+            // Display Ambient temperature Draw text and value first
+            snprintf(buf, sizeof(buf), "Temp: %.1f", ambient_temp);
             st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);
-            y_pos += line_height;
+       
+            // Draw raised "0"
+            int text_width = (int)strlen(buf) * FONT_W * scale-10;
+            st7789h2_draw_string_scaled(x_pos + text_width, y_pos - (scale * 4),"0", 0xFFFF, 0x0000, scale - 1);
+
+            // Draw "C"
+            st7789h2_draw_string_scaled(x_pos + text_width + (FONT_W * (scale - 1)), y_pos, "C", 0xFFFF, 0x0000, scale);
+            
+            // Line shift
+            y_pos += line_height;  
 
             // Display Relative humidity
             snprintf(buf, sizeof(buf), "Hum: %.1f %%RH", data.humidity);
@@ -242,7 +250,7 @@ void app_main(void)
             y_pos += line_height;
 
             //Display Alert
-            st7789h2_draw_string_scaled(x_pos, y_pos, "Alert: ", 0xFFFF, 0x0000, scale);
+            st7789h2_draw_string_scaled(x_pos, y_pos, "Alerts: ", 0xFFFF, 0x0000, scale);
             y_pos += line_height;
             snprintf(buf, sizeof(buf), storm_level_str(baro_forecast_storm_level(&g_baro)));
             st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);   
@@ -260,7 +268,54 @@ void app_main(void)
                         baro_forecast_delta_3h(&g_baro),
                         baro_trend_str(baro_forecast_trend(&g_baro)));
             }
+            // This function ensures that no gas sensor data is displayed before 30 minute warmup
+            int64_t elapsed_sec = (esp_timer_get_time() - gas_start_us) / 1000000;
 
+            if (!gas_baseline_ready) {
+                if (elapsed_sec >= GAS_WARMUP_TIME_SEC) {
+                    // First valid baseline initialization
+                    gas_baseline = data.gas_resistance;
+                    gas_baseline_ready = true;
+
+                    ESP_LOGI(TAG, "Gas sensor warm-up complete. Baseline initialized: %.0f Ω", gas_baseline);
+                }
+                else {
+                    // Still warming up
+                    ESP_LOGI(TAG,"Warming up... %u / %u seconds", uptime_seconds, GAS_WARMUP_TIME_SEC);
+
+                    // Display "Warming up gas sensor"
+                    st7789h2_draw_string_scaled(x_pos, y_pos, "Air Quality:", 0xFFFF, 0x0000, scale);
+                    y_pos += line_height;
+                    st7789h2_draw_string_scaled(x_pos, y_pos, "Warming up...     ", 0xFFFF, 0x0000, scale);
+                    if (elapsed_sec >= GAS_WARMUP_TIME_SEC){
+                    st7789h2_draw_string_scaled(x_pos, y_pos, "              ", 0xFFFF, 0x0000, scale); //Clear display line
+                }
+            }
+        }
+            if (gas_baseline_ready){
+                // Exponential moving average (EMA)
+                gas_baseline = (1.0f - GAS_BASELINE_ALPHA) * gas_baseline + GAS_BASELINE_ALPHA * data.gas_resistance;
+                gas_ratio = gas_baseline / data.gas_resistance;
+                ESP_LOGI(TAG, "Gas Ratio = %.2f", gas_ratio);
+                if (gas_ratio < 0.9f)
+                    air_quality = "Very clean        ";
+                else if (gas_ratio < 1.1f)
+                air_quality = "Normal Quality    ";
+                else if (gas_ratio < 1.5f)
+                air_quality = "Polluted          ";
+                else
+                air_quality = "Very polluted     ";
+
+                ESP_LOGI(TAG, "Air = %s", air_quality);
+
+                //Write to display 
+                st7789h2_draw_string_scaled(x_pos, y_pos, "Air Quality:", 0xFFFF, 0x0000, scale);
+                y_pos += line_height;     
+
+                // Air Quality
+                snprintf(buf, sizeof(buf), air_quality);
+                st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);  
+            } 
         }
         else if (rslt == BME68X_W_NO_NEW_DATA) {
             ESP_LOGW(TAG, "No new data (sensor still busy or timing issue).");
@@ -268,62 +323,7 @@ void app_main(void)
         else {
             ESP_LOGE(TAG, "Read failed (rslt=%d)", rslt);
         }
-        
-        // This function ensures that no gas sensor data is displayed before 30 minute warmup
-        int64_t elapsed_sec = (esp_timer_get_time() - gas_start_us) / 1000000;
-
-        if (!gas_baseline_ready) {
-            if (elapsed_sec >= GAS_WARMUP_TIME_SEC) {
-                // First valid baseline initialization
-                gas_baseline = data.gas_resistance;
-                gas_baseline_ready = true;
-
-                ESP_LOGI(TAG, "Gas sensor warm-up complete. Baseline initialized: %.0f Ω",
-                        gas_baseline);
-                
-
-            } else {
-                // Still warming up
-                ESP_LOGI(TAG,
-                        "Warming up... %u / %u seconds",
-                        uptime_seconds,
-                        GAS_WARMUP_TIME_SEC);
-
-                // Display "Warming up gas sensor"
-                st7789h2_draw_string_scaled(x_pos, y_pos, "Air Quality:", 0xFFFF, 0x0000, scale);
-                y_pos += line_height;
-                st7789h2_draw_string_scaled(x_pos, y_pos, "Warming up...", 0xFFFF, 0x0000, scale);
-                if (elapsed_sec >= GAS_WARMUP_TIME_SEC){
-                    st7789h2_draw_string_scaled(x_pos, y_pos, "              ", 0xFFFF, 0x0000, scale); //Clear display line
-                }
-            }
-        }
-    
-        if (gas_baseline_ready){
-        // Exponential moving average (EMA)
-        gas_baseline = (1.0f - GAS_BASELINE_ALPHA) * gas_baseline + GAS_BASELINE_ALPHA * data.gas_resistance;
-        gas_ratio = gas_baseline / data.gas_resistance;
-        ESP_LOGI(TAG, "Gas Ratio = %.2f", gas_ratio);
-        if (gas_ratio < 0.9f)
-            air_quality = "Very clean";
-        else if (gas_ratio < 1.1f)
-            air_quality = "Normal Quality";
-        else if (gas_ratio < 1.5f)
-            air_quality = "Polluted";
-        else
-            air_quality = "Very polluted";
-
-        ESP_LOGI(TAG, "Air = %s", air_quality);
-
-        //Write to display 
-        st7789h2_draw_string_scaled(x_pos, y_pos, "Air Quality:", 0xFFFF, 0x0000, scale);
-        y_pos += line_height;     
-
-        // Air Quality
-        snprintf(buf, sizeof(buf), air_quality);
-        st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);  
-
-        } 
+      
     /* Wait 1 second between updates */
     vTaskDelay(pdMS_TO_TICKS(1000));
     }

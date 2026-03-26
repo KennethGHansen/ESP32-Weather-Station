@@ -288,42 +288,42 @@ const char* baro_forecast_text(const baro_forecast_t *s)
     if (s->full_3h) {
         float d3h = s->delta_3h_hpa;
 
-        if (d3h <= DROP_3H_STORM_WARNING) return "Rapid pressure fall: storm approaching";
-        if (d3h <= DROP_3H_STORM_LIKELY)  return "Falling pressure: rain/storm possible";
-        if (d3h >= 2.0f)                 return "Rising pressure: weather improving";
+        if (d3h <= DROP_3H_STORM_WARNING) return "Storm Aprroaching  ";       //"Rapid pressure fall: storm approaching";
+        if (d3h <= DROP_3H_STORM_LIKELY)  return "Rain/Storm possible";       //"Falling pressure: rain/storm possible";
+        if (d3h >= 2.0f)                  return "Weather improving  ";       //"Rising pressure: weather improving";
     }
 
     /* Priority 2: early Δ1h signals (usable after 1 hour) */
     if (s->full_1h) {
         float d1h = s->delta_1h_hpa;
 
-        if (d1h <= DROP_1H_RAPID)         return "Rapid 1h pressure fall: early storm signal";
-        if (d1h <= DROP_1H_DETERIORATING) return "Falling pressure: conditions may worsen";
-        if (d1h >= 1.0f)                 return "Rising pressure: improving";
+        if (d1h <= DROP_1H_RAPID)         return "Early storm signal ";       //"Rapid 1h pressure fall: early storm signal";
+        if (d1h <= DROP_1H_DETERIORATING) return "Deteriorating      ";       //"Falling pressure: conditions may worsen";
+        if (d1h >= 1.0f)                  return "Improving          ";       //"Rising pressure: improving";
     }
 
     /* Priority 3: absolute bucket */
     if (isfinite(s->last_slp_hpa)) return absolute_bucket(s->last_slp_hpa);
-    return "Pressure unavailable";
+    return "Pressure unavailiab.";
 }
 
 const char* baro_trend_str(baro_trend_t t)
 {
     switch (t) {
-        case BARO_TREND_RISING:  return "Rising";
-        case BARO_TREND_FALLING: return "Falling";
-        case BARO_TREND_STEADY:  return "Steady";
-        default:                 return "Unknown";
+        case BARO_TREND_RISING:  return "Rising             ";
+        case BARO_TREND_FALLING: return "Falling            ";
+        case BARO_TREND_STEADY:  return "Steady             ";
+        default:                 return "Unknown            ";
     }
 }
 
 const char* storm_level_str(storm_level_t lvl)
 {
     switch (lvl) {
-        case STORM_GALE_RISK:     return "GALE RISK";
-        case STORM_WARNING:       return "STORM WARNING";
-        case STORM_LIKELY:        return "Storm likely";
-        case STORM_DETERIORATING: return "Weather deteriorating";
-        default:                  return "No storm signal";
+        case STORM_GALE_RISK:     return "GALE RISK          ";
+        case STORM_WARNING:       return "STORM WARNING      ";
+        case STORM_LIKELY:        return "Storm likely       ";
+        case STORM_DETERIORATING: return "Deteriorating      ";
+        default:                  return "No storm signal    ";
     }
 }
