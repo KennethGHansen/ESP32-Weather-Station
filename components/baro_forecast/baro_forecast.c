@@ -11,6 +11,7 @@
  */
 
 #include "baro_forecast.h"
+#include "esp_timer.h"
 
 #include <math.h>    /* NAN, isfinite, powf */
 #include <string.h>  /* memset */
@@ -173,13 +174,11 @@ void baro_forecast_init(baro_forecast_t *s, const baro_config_t *cfg)
     s->last_slp_hpa = NAN;
 
     /* Counters start at 0 */
-    s->sec_counter = 0;
+    s->last_sample_us = 0;
 }
 
 void baro_forecast_update_pa(baro_forecast_t *s, float pressure_pa)
 {
-    s->sec_counter++;
-
     /* Convert sensor station pressure to hPa */
     float station_hpa_raw = pa_to_hpa(pressure_pa);
 
@@ -205,9 +204,25 @@ void baro_forecast_update_pa(baro_forecast_t *s, float pressure_pa)
     }
 
     /* Store into history only once per sample period (default 60 seconds) */
-    if ((s->sec_counter % s->cfg.sample_period_s) != 0u) {
+    uint64_t now_us = esp_timer_get_time();
+    uint64_t period_us = (uint64_t)s->cfg.sample_period_s * 1000000ULL;
+
+    /* First-ever sample: initialize timestamp but do not store yet */
+    if (s->last_sample_us == 0) {
+        s->last_sample_us = now_us;
         return;
     }
+
+    /* Not enough real time has passed */
+    if ((now_us - s->last_sample_us) < period_us) {
+        return;
+    }
+
+    /* Advance timestamp by exactly one period to avoid drift (Clean "catch up" method if code halts at some point) */
+    int64_t elapsed = now_us - s->last_sample_us;
+    int64_t periods = elapsed / period_us;
+    s->last_sample_us += periods * period_us;
+
 
     /* We store SLP (or station if SLP disabled) to make buckets consistent */
     float store_hpa = s->last_slp_hpa;
