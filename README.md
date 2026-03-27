@@ -22,6 +22,11 @@ More to come!
 
 ---
 
+## Working revision
+v0.2 - General code and display functionality running
+
+---
+
 ## License / Attribution
 
 - Bosch BME68x SensorAPI is BSD‑3‑Clause licensed
