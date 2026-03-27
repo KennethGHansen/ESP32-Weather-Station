@@ -143,6 +143,9 @@ typedef struct {
     /* Derived classifications */
     baro_trend_t trend;
     storm_level_t storm;
+
+    /* Timestamp of last stored history sample*/
+    uint64_t last_sample_us;   
 } baro_forecast_t;
 
 /* =========================

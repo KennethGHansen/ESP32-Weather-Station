@@ -1,0 +1,123 @@
+This is an overview of how the weather station barometer functions right now (27/03-2026). At this point only the display is implemented!
+
+1. Immediately after boot (seconds–minutes)
+What happens internally
+
+MCU boots, peripherals initialize.
+Display is cleared.
+BME680 is probed and configured.
+baro_forecast_init():
+
+Clears all history buffers.
+EMA is not valid yet.
+No 1h or 3h buffers are full.
+Trend = BARO_TREND_UNKNOWN
+Storm = STORM_NONE
+
+What the user sees
+
+Temperature & humidity: valid almost immediately.
+SLP: valid after the first pressure sample.
+Forecast text:
+Comes from baro_forecast_text() → falls back to absolute pressure bucket:
+
+“Beautiful / Fair / Unsettled / Stormy”
+
+Trend:	(Shown as long as no alert is present)
+Shown as “Gathering data...”. (Shown as long as no alert is present)
+
+
+Alerts: (Not shown unless an alert happens)
+None. (Not shown unless an alert happens)
+
+
+Air quality:
+Explicitly marked as Warming up...(The warm up time is set to 30 minutes pr. recommendation from Bosch, timing is controlled by real time clock)
+
+
+2. First few minutes (EMA settling)
+What happens internally
+
+EMA smoothing stabilizes pressure readings.
+Station pressure → SLP becomes reliable.
+History buffers still not full.
+
+What the user sees
+
+Temperature / humidity stable.
+Pressure and forecast bucket stable.
+Trend still Unknown.
+No alerts.
+
+3. After ~1 hour
+What happens internally
+
+hist_1h becomes full.
+delta_1h becomes valid.
+Storm logic starts producing early warnings:
+
+STORM_DETERIORATING
+STORM_LIKELY
+
+These will only be displayed if they are true, otherwise only trend text is showing
+
+Trend is still unknown (by design).
+
+What the user sees
+Forecast text may change:
+
+“Early storm signal”
+“Weather worsening”
+
+Alerts override trend display (your new logic):
+“Deteriorating”
+“Storm likely”
+
+If pressure is stable:
+No alert → Trend shown as “Gathering data...”
+
+
+4. After ~3 hours
+What happens internally
+
+hist_3h becomes full.
+delta_3h becomes authoritative.
+Trend is computed from 3h delta.
+Storm logic switches to higher confidence thresholds.
+
+What the user sees
+
+Trend now becomes meaningful:
+“Pressure rising”
+“Pressure falling”
+“Pressure steady”
+
+Alerts still override trend if present.
+Forecast text becomes more descriptive and stable.
+
+
+5. Long‑term steady state (hours–days)
+What happens internally
+
+EMA smooths indoor spikes.
+Ring buffers continuously roll.
+Trend reacts slowly (as it should).
+Alerts react quickly to strong drops.
+
+What the user sees
+
+Stable trend most of the time.
+Alerts only when something meaningful happens.
+No flickering UI.
+No contradictory messages.
+
+Separation of concerns:
+Trend = background behavior
+Alert = exceptional condition
+
+
+- Alerts override trend (critical information first).
+- Don’t show trend until it’s trustworthy.
+- Early storm detection doesn’t wait for 3 hours.
+- Gas sensor warm‑up is clearly communicated.
+- Forecast text combines multiple signals cleanly.
