@@ -97,10 +97,10 @@ static bool ring_delta(const float *hist, uint16_t len, uint16_t idx, bool full,
 
 static const char* absolute_bucket(float p_hpa)
 {
-    if (p_hpa >= ABS_HIGH_HPA)   return "Beautiful (High)";
-    if (p_hpa >= ABS_NORMAL_HPA) return "Fair (Normal)";
-    if (p_hpa >= ABS_LOW_HPA)    return "Unsettled (Low)";
-    return "Stormy (Very Low)";
+    if (p_hpa >= ABS_HIGH_HPA)   return "Beautiful          ";
+    if (p_hpa >= ABS_NORMAL_HPA) return "Fair               ";
+    if (p_hpa >= ABS_LOW_HPA)    return "Unsettled          ";
+    return "Stormy             ";
 }
 
 static baro_trend_t trend_from_delta_3h(float d3h)
@@ -313,22 +313,22 @@ const char* baro_forecast_text(const baro_forecast_t *s)
         float d1h = s->delta_1h_hpa;
 
         if (d1h <= DROP_1H_RAPID)         return "Early storm signal ";       //"Rapid 1h pressure fall: early storm signal";
-        if (d1h <= DROP_1H_DETERIORATING) return "Deteriorating      ";       //"Falling pressure: conditions may worsen";
-        if (d1h >= 1.0f)                  return "Improving          ";       //"Rising pressure: improving";
+        if (d1h <= DROP_1H_DETERIORATING) return "Weather worsening  ";       //"Falling pressure: conditions may worsen";
+        if (d1h >= 1.0f)                  return "Weather improving  ";       //"Rising pressure: improving";
     }
 
     /* Priority 3: absolute bucket */
     if (isfinite(s->last_slp_hpa)) return absolute_bucket(s->last_slp_hpa);
-    return "Pressure unavailiab.";
+    return "Pressure unavailiab";
 }
 
 const char* baro_trend_str(baro_trend_t t)
 {
     switch (t) {
-        case BARO_TREND_RISING:  return "Rising             ";
-        case BARO_TREND_FALLING: return "Falling            ";
-        case BARO_TREND_STEADY:  return "Steady             ";
-        default:                 return "Unknown            ";
+        case BARO_TREND_RISING:  return "Pressure rising    ";
+        case BARO_TREND_FALLING: return "Pressure falling   ";
+        case BARO_TREND_STEADY:  return "Pressure steady    ";
+        default:                 return "Gathering data...  ";
     }
 }
 

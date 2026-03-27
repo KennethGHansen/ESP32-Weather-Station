@@ -100,7 +100,7 @@ st7789h2_config_t cfg_disp = {
 // Example: dynamic temperature offset for BME680 self‑heating
 // Idea: more heater influence → larger offset, less influence → smaller offset
 // Tunable parameters, for a more correct temperature measurement (Is not used, only static offset is used)
-#define BOARD_TEMP_OFFSET_C  (-3.5f)   // Expected board temperature constant offset (Tune if constant offset is used)
+#define BOARD_TEMP_OFFSET_C  (-3.0f)   // Expected board temperature constant offset (Tune if constant offset is used)
 #define BASE_OFFSET_C        (-2.0f)   // minimum offset (heater influence low)
 #define MAX_EXTRA_OFFSET_C   (-3.0f)   // additional offset when heater influence is high
 #define GAS_REF_OHMS         (100000.0f) // reference “clean air” resistance
@@ -240,18 +240,35 @@ void app_main(void)
             y_pos += line_height;        
             
             //Display Forcast
-            st7789h2_draw_string_scaled(x_pos, y_pos, "Forcast: ", 0xFFFF, 0x0000, scale);
+            st7789h2_draw_string_scaled(x_pos, y_pos, "Forcast:           ", 0xFFFF, 0x0000, scale);
             y_pos += line_height;
             snprintf(buf, sizeof(buf), baro_forecast_text(&g_baro));
             st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);
             y_pos += line_height;
 
-            //Display Alert
-            st7789h2_draw_string_scaled(x_pos, y_pos, "Alerts: ", 0xFFFF, 0x0000, scale);
-            y_pos += line_height;
-            snprintf(buf, sizeof(buf), storm_level_str(baro_forecast_storm_level(&g_baro)));
-            st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);   
-            y_pos += line_height;
+            // Display trends but let it be overruled by any storm alerts
+            storm_level_t storm = baro_forecast_storm_level(&g_baro);
+
+            if (storm != STORM_NONE)
+            {
+                //Display Alert
+                st7789h2_draw_string_scaled(x_pos, y_pos, "Alerts:            ", 0xFFFF, 0x0000, scale);
+                y_pos += line_height;
+                snprintf(buf, sizeof(buf), "%s", storm_level_str(storm) );
+                st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);   
+                y_pos += line_height;
+            }
+            else
+            {
+                //Display Trend
+                st7789h2_draw_string_scaled(x_pos, y_pos, "Trend:             ", 0xFFFF, 0x0000, scale);
+                y_pos += line_height;
+
+                baro_trend_t trend = baro_forecast_trend(&g_baro);
+                snprintf(buf, sizeof(buf), "%s", baro_trend_str(trend));
+                st7789h2_draw_string_scaled(x_pos, y_pos, buf, 0xFFFF, 0x0000, scale);   
+                y_pos += line_height;
+            }
 
             /* Once enough history exists, also log deltas */
             if (baro_forecast_ready_1h(&g_baro)) {
@@ -283,7 +300,7 @@ void app_main(void)
                     // Display "Warming up gas sensor"
                     st7789h2_draw_string_scaled(x_pos, y_pos, "Air Quality:", 0xFFFF, 0x0000, scale);
                     y_pos += line_height;
-                    st7789h2_draw_string_scaled(x_pos, y_pos, "Warming up...     ", 0xFFFF, 0x0000, scale);
+                    st7789h2_draw_string_scaled(x_pos, y_pos, "Warming up...      ", 0xFFFF, 0x0000, scale);
                     if (elapsed_sec >= GAS_WARMUP_TIME_SEC){
                     st7789h2_draw_string_scaled(x_pos, y_pos, "              ", 0xFFFF, 0x0000, scale); //Clear display line
                 }
@@ -295,13 +312,13 @@ void app_main(void)
                 gas_ratio = gas_baseline / data.gas_resistance;
                 ESP_LOGI(TAG, "Gas Ratio = %.2f", gas_ratio);
                 if (gas_ratio < 0.9f)
-                    air_quality = "Very clean        ";
+                    air_quality = "Very clean         ";
                 else if (gas_ratio < 1.1f)
-                air_quality = "Normal            ";
+                air_quality = "Normal             ";
                 else if (gas_ratio < 1.5f)
-                air_quality = "Polluted          ";
+                air_quality = "Polluted           ";
                 else
-                air_quality = "Very polluted     ";
+                air_quality = "Very polluted      ";
 
                 ESP_LOGI(TAG, "Air = %s", air_quality);
 
