@@ -7,7 +7,8 @@
  * This version uses modules:
  *  - ui.c/.h: display layout + helper print functions (no full-screen clear per update)
  *  - air_quality.c/.h: warmup + baseline + quality text output
- *  - baro_forecast.c/.h: forecasting model (kept as-is)
+ *  - baro_forecast.c/.h: forecasting model 
+ * -  pushbuttons.c/.h: XNUCLEO-GFX01M2 "joystick" pushbuttons for min/max display
  *
  * IMPORTANT TIMING NOTE (WHY THIS EXISTS):
  * Display writing over SPI can take longer than 1 second. If we try to run a strict 1 Hz
