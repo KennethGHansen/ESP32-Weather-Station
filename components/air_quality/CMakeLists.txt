@@ -1,8 +1,8 @@
 idf_component_register(
     SRCS
-        "baro_forecast.c"
+        "air_quality.c"
     INCLUDE_DIRS
-        "include"
+        "."
     REQUIRES
         esp_timer
 )

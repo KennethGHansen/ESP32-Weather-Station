@@ -1,1 +1,13 @@
-idf_component_register(SRCS "main_app.c" INCLUDE_DIRS "." REQUIRES st7789h2 baro_forecast bme68x esp_timer)   
+idf_component_register(
+    SRCS
+        "main_app.c"
+        "ui.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        baro_forecast
+        air_quality
+        st7789h2
+        bme68x
+        esp_timer
+)
