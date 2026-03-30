@@ -12,7 +12,7 @@ Please see my repository ESP32_SEN-BME680.
 
 ## TODO list
 - [X] Add display
-- [ ] Add ESP32 RTOS task management
+- [X] Add ESP32 RTOS task management
 - [ ] Add push button
 - [ ] Add WiFi
 - [ ] Add proximity activation
@@ -23,7 +23,7 @@ More to come!
 ---
 
 ## Working revision
-v0.2 - General code and display functionality running
+v0.3 - ESP32 RTOS task management structure running
 
 ---
 
