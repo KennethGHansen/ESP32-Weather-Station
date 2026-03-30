@@ -304,7 +304,7 @@ const char* baro_forecast_text(const baro_forecast_t *s)
         float d3h = s->delta_3h_hpa;
 
         if (d3h <= DROP_3H_STORM_WARNING) return "Storm Aprroaching  ";       //"Rapid pressure fall: storm approaching";
-        if (d3h <= DROP_3H_STORM_LIKELY)  return "Rain/Storm possible";       //"Falling pressure: rain/storm possible";
+        if (d3h <= DROP_3H_STORM_LIKELY)  return "Rain/Storm possib. ";       //"Falling pressure: rain/storm possible";
         if (d3h >= 2.0f)                  return "Weather improving  ";       //"Rising pressure: weather improving";
     }
 
