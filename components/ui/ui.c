@@ -91,7 +91,7 @@ void ui_render_frame(const ui_layout_t *layout,
     char buf[64];
 
     /* ---------------------------------------------------------------------- */
-    /* Temperature (same style as before, including raised "0" and "C")        */
+    /* Temperature (Including raised "0" and "C")                             */
     /* ---------------------------------------------------------------------- */
     ui_draw_printf(x, y, scale, buf, sizeof(buf), "Temp: %.1f", ambient_temp_c);
 
@@ -115,13 +115,13 @@ void ui_render_frame(const ui_layout_t *layout,
     /* ---------------------------------------------------------------------- */
     /* Relative humidity                                                      */
     /* ---------------------------------------------------------------------- */
-    ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum: %.1f %%RH", data->humidity);
+    ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum:  %.1f %%RH", data->humidity);
     y += lh;
 
     /* ---------------------------------------------------------------------- */
     /* Barometer output (SLP + Forecast + Alerts/Trend)                        */
     /* ---------------------------------------------------------------------- */
-    ui_draw_printf(x, y, scale, buf, sizeof(buf), "SLP: %.0f hPa", baro_forecast_slp_hpa(baro));
+    ui_draw_printf(x, y, scale, buf, sizeof(buf), "SLP:  %.0f hPa", baro_forecast_slp_hpa(baro));
     y += lh;
 
     y += lh;
@@ -150,7 +150,7 @@ void ui_render_frame(const ui_layout_t *layout,
     }
 
     /* ---------------------------------------------------------------------- */
-    /* Air quality (THIS IS YOUR "REAL TEXT": aq_out->text)                    */
+    /* Air quality (THIS IS THE "REAL TEXT": aq_out->text)                    */
     /* ---------------------------------------------------------------------- */
     ui_draw_text(x, y, scale, "Air Quality:");
     y += lh;
@@ -162,69 +162,46 @@ void ui_render_frame(const ui_layout_t *layout,
 /* -------------------------------------------------------------------------- */
 /* NEW: Screen 2 renderer (MIN/MAX + confirmation prompt)                      */
 /* -------------------------------------------------------------------------- */
-static inline float pa_to_hpa(float pa) { return pa / 100.0f; }
-
 void ui_render_minmax(const ui_layout_t *layout,
                       const minmax_stats_t *s,
                       bool confirm_active,
                       ui_confirm_target_t confirm_target)
 {
-    uint16_t x = layout->x_pos;
-    uint16_t y = layout->y_pos_start;
+    uint16_t x = layout->x_pos-10;
+    uint16_t y = layout->y_pos_start-10;
     uint8_t  scale = layout->scale;
     uint16_t lh = layout->line_height;
 
     char buf[64];
 
     /* ------------------------------------------------------------ */
-    /* Title                                                        */
-    /* ------------------------------------------------------------ */
-    st7789h2_draw_string_scaled(x, y, "MIN / MAX", UI_ACC, UI_BG, scale);
-    y += lh;
-
-    /* ------------------------------------------------------------ */
     /* Min / Max values (or placeholders if not valid yet)          */
     /* ------------------------------------------------------------ */
     if (s && s->valid) {
 
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28,
-                              "T: Min %5.1fC Max %5.1fC",
-                              s->temp_min_c, s->temp_max_c);
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "      MIN   MAX    ");
         y += lh;
-
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28,
-                              "H: Min %5.1f%% Max %5.1f%%",
-                              s->rh_min, s->rh_max);
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "T(C):%5.1f %5.1f", s->temp_min_c, s->temp_max_c );
         y += lh;
-
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28,
-                              "P: Min %6.1fh Max %6.1fh",
-                              pa_to_hpa(s->press_min_pa),
-                              pa_to_hpa(s->press_max_pa));
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "H(%%):%5.1f %5.1f", s->rh_min, s->rh_max);
         y += lh;
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "P(h):%6.1f %6.1f", s->press_min_hpa, s->press_max_hpa);          
+        y += lh;     
 
     } else {
 
+
+
         /* No data yet – still show something */
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28,
-                              "T: Min --.-C Max --.-C");
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "      MIN   MAX    ");
         y += lh;
-
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28,
-                              "H: Min --.-%% Max --.-%%");
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "T(C): ----  ----", s->temp_min_c, s->temp_max_c );
         y += lh;
-
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28,
-                              "P: Min ----h Max ----h");
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "H(%%): ----  ----", s->rh_min, s->rh_max);
         y += lh;
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "P(h):------ ------", s->press_min_hpa, s->press_max_hpa);          
+        y += lh; 
     }
-
-    /* ------------------------------------------------------------ */
-    /* Hints                                                        */
-    /* ------------------------------------------------------------ */
-    ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28,
-                          "UP:Back  L/R/D:Reset");
-    y += lh;
 
     /* ------------------------------------------------------------ */
     /* Confirmation prompt (THIS IS WHAT CHANGES ON BUTTON PRESS)   */
@@ -235,18 +212,23 @@ void ui_render_minmax(const ui_layout_t *layout,
         const char *btn  = "???";
 
         switch (confirm_target) {
-            case UI_CONFIRM_TEMP:  what = "TEMP";  btn = "LEFT";  break;
-            case UI_CONFIRM_RH:    what = "HUM";   btn = "RIGHT"; break;
-            case UI_CONFIRM_PRESS: what = "PRES";  btn = "DOWN";  break;
+            case UI_CONFIRM_TEMP:  what = "Tmp. min/max";   btn = "LEFT";  break;
+            case UI_CONFIRM_RH:    what = "Hum. min/max";   btn = "RIGHT"; break;
+            case UI_CONFIRM_PRESS: what = "Prs. min/max";   btn = "DOWN";  break;
             default: break;
         }
 
-        snprintf(buf, sizeof(buf), "Reset %s? Press %s again", what, btn);
+        snprintf(buf, sizeof(buf), "Reset %s?", what);
         st7789h2_draw_string_scaled(x, y, buf, UI_WARN, UI_BG, scale);
         y += lh;
+        snprintf(buf, sizeof(buf), "Press %s again", btn);
+        st7789h2_draw_string_scaled(x, y, buf, UI_WARN, UI_BG, scale);
 
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28,
-                              "Any other button cancels");
+        //snprintf(buf, sizeof(buf), "Reset %s? Press %s again", what, btn);
+        //st7789h2_draw_string_scaled(x, y, buf, UI_WARN, UI_BG, scale);
+        //y += lh;
+
+
 
     } else {
 

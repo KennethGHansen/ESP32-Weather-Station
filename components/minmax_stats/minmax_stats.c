@@ -17,11 +17,11 @@ void minmax_init(minmax_stats_t *s)
 
     s->last_temp_c = 0.0f;
     s->last_rh = 0.0f;
-    s->last_press_pa = 0.0f;
+    s->last_press_hpa = 0.0f;
 
     s->temp_min_c = s->temp_max_c = 0.0f;
     s->rh_min     = s->rh_max     = 0.0f;
-    s->press_min_pa = s->press_max_pa = 0.0f;
+    s->press_min_hpa = s->press_max_hpa = 0.0f;
 }
 
 void minmax_update(minmax_stats_t *s, float temp_c, float rh, float press_pa)
@@ -31,14 +31,14 @@ void minmax_update(minmax_stats_t *s, float temp_c, float rh, float press_pa)
     // store latest
     s->last_temp_c   = temp_c;
     s->last_rh       = rh;
-    s->last_press_pa = press_pa;
+    s->last_press_hpa = press_pa;
 
     // first sample initializes registers
     if (!s->valid) {
         s->valid = true;
         s->temp_min_c = s->temp_max_c = temp_c;
         s->rh_min     = s->rh_max     = rh;
-        s->press_min_pa = s->press_max_pa = press_pa;
+        s->press_min_hpa = s->press_max_hpa = press_pa;
         return;
     }
 
@@ -49,8 +49,8 @@ void minmax_update(minmax_stats_t *s, float temp_c, float rh, float press_pa)
     s->rh_min = fmin_local(s->rh_min, rh);
     s->rh_max = fmax_local(s->rh_max, rh);
 
-    s->press_min_pa = fmin_local(s->press_min_pa, press_pa);
-    s->press_max_pa = fmax_local(s->press_max_pa, press_pa);
+    s->press_min_hpa = fmin_local(s->press_min_hpa, press_pa);
+    s->press_max_hpa = fmax_local(s->press_max_hpa, press_pa);
 }
 
 void minmax_reset_temp(minmax_stats_t *s)
@@ -68,5 +68,5 @@ void minmax_reset_rh(minmax_stats_t *s)
 void minmax_reset_press(minmax_stats_t *s)
 {
     if (!s || !s->valid) return;
-    s->press_min_pa = s->press_max_pa = s->last_press_pa;
+    s->press_min_hpa = s->press_max_hpa = s->last_press_hpa;
 }

@@ -19,12 +19,12 @@ typedef struct
     // Latest received sample (used when resetting min/max)
     float last_temp_c;
     float last_rh;
-    float last_press_pa;
+    float last_press_hpa;
 
     // Min/Max registers
     float temp_min_c, temp_max_c;
     float rh_min,     rh_max;
-    float press_min_pa, press_max_pa;
+    float press_min_hpa, press_max_hpa;
 
 } minmax_stats_t;
 

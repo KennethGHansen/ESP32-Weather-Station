@@ -1,8 +1,8 @@
 /*
  * ui_controller.c
  *
- * Implements button behavior you specified:
- * - UP toggles overview <-> min/max
+ * Implements button behavior specified:
+ * - UP toggles overview <-> min/max screen
  * - LEFT/RIGHT/DOWN only function in min/max
  * - First press arms confirmation prompt
  * - Second press of SAME reset button is handled by caller (does reset),

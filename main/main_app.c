@@ -5,25 +5,16 @@
  *
  * This version:
  * - Keeps the proven "real time clock method" timing loop:
- * Uses esp_timer_get_time() to decide when a 1-second cycle has elapsed.
- * Avoids vTaskDelayUntil() drift when SPI drawing takes > 1 second.
+ * - Uses esp_timer_get_time() to decide when a 1-second cycle has elapsed.
+ * - Avoids vTaskDelayUntil() drift when SPI drawing takes > 1 second.
  * - Adds X-NUCLEO joystick buttons (active-low) using GPIO interrupts.
- * - Provides serial monitor "button press affirmation" (ESP_LOGI on press).
+ * - Provides serial monitor "button press affirmation" (ESP_LOGI on press) for debug only
  * - Implements Screen 2 (Min/Max) navigation + reset confirmation workflow.
  *
  * IMPORTANT DESIGN CHOICE:
  * - Worker task continues reading sensor data even while Screen 2 is active.
  * - But when Screen 2 is active, we do NOT render/update Screen 1.
- * (We render Screen 2 instead.)
- *
- * NOTE:
- * - This file assumes these modules exist in your project:
- * ui.h/.c -> ui_render_frame(), ui_render_minmax()
- * air_quality.h/.c -> air_quality_update()
- * baro_forecast.h/.c -> baro_forecast_update_pa()
- * pushbuttons.h/.c -> interrupt driven button events
- * minmax_stats.h/.c -> min/max tracking
- * ui_controller.h/.c -> screen + confirmation state machine
+ * - (We render Screen 2 instead.)
  */
 
 #include <stdio.h>
@@ -36,35 +27,34 @@
 #include "esp_timer.h"
 #include "driver/gpio.h" // joystick GPIOs
 
-// Your existing components
+// User components
 #include "baro_forecast.h"
 #include "bme68x_esp32_i2c.h"
 #include "st7789h2.h"
 #include "ui.h"
 #include "air_quality.h"
-
-// New modules (buttons + min/max + UI state machine)
+// Buttons + min/max + UI state machine
 #include "pushbuttons.h"
 #include "minmax_stats.h"
 #include "ui_controller.h"
 
 static const char *TAG = "main_app";
 static ui_screen_t g_last_screen = UI_SCREEN_OVERVIEW;
-static volatile bool g_ui_dirty = true;   // NEW: UI redraw request flag
+static volatile bool g_ui_dirty = true;   // UI redraw request flag
 
 /* -------------------------------------------------------------------------- */
 /* User configuration section                                                  */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Font details from your project history.
- * (UI module may also define its own; kept here because you previously used it.)
+ * Font details external font file
+ * UI module may also define its own
  */
 #define FONT_W 7
 #define FONT_H 5
 
 /**
- * ESP32-S3 I2C pins (as in your current working setup).
+ * ESP32-S3 I2C pins
  */
 #define I2C_PORT I2C_NUM_0
 #define I2C_SDA_GPIO GPIO_NUM_8
@@ -72,19 +62,13 @@ static volatile bool g_ui_dirty = true;   // NEW: UI redraw request flag
 #define I2C_FREQ_HZ 400000
 
 /**
- * Temperature offset for better ambient temperature.
+ * Temperature offset for better ambient temperature (experience showed that -3C works for me)
  */
 #define BOARD_TEMP_OFFSET_C (-3.0f)
 
 /**
- * Joystick pins (placeholders you will change).
- * Use real GPIO_NUM_XX values later.
- *
- * I used GPIO_NUM_0/1/2/3 so the code compiles immediately.
- * REPLACE them with your correct wiring.
- *
- * (Your request: "leave placeholders open (write something like GPIOx)":
- * I keep clear "GPIOx_*" comments next to each define.)
+ * Joystick pins
+ * Simple (Active low) connections from the X-NUCLEO Display board to free GPIOs
  */
 #define JOY_UP_GPIO    GPIO_NUM_18 // GPIOx_UP
 #define JOY_LEFT_GPIO  GPIO_NUM_17 // GPIOx_LEFT
@@ -134,7 +118,7 @@ static st7789h2_config_t cfg_disp = {
 };
 
 /* -------------------------------------------------------------------------- */
-/* Button handling (affirmation + state machine + min/max reset)               */
+/* Button handling (affirmation + state machine + min/max reset)              */
 /* -------------------------------------------------------------------------- */
 
 static void do_reset_for_target(ui_confirm_target_t tgt)
@@ -149,7 +133,9 @@ static void do_reset_for_target(ui_confirm_target_t tgt)
     portEXIT_CRITICAL(&g_lock);
 }
 
-
+/* -------------------------------------------------------------------------- */
+/* Push button callback function                                              */
+/* -------------------------------------------------------------------------- */
 static void pb_callback(pb_button_t btn, void *user)
 {
     (void)user;
@@ -199,13 +185,14 @@ static void pb_callback(pb_button_t btn, void *user)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Worker task: reads sensor and renders active screen                         */
+/* Worker task: reads sensor and renders active screen                        */
 /* -------------------------------------------------------------------------- */
 
 static void worker_task(void *arg)
 {
     (void)arg;
 
+    // UI setup and start point for both screen 1 and 2
     const ui_layout_t layout = {
         .scale = 2,
         .line_height = (uint16_t)(8 * (2 + 2)),
@@ -258,7 +245,7 @@ static void worker_task(void *arg)
 
                 if (rslt == BME68X_OK) {
 
-                    /*
+                /*
                  * With BME68X_USE_FPU enabled, the Bosch driver produces floating-point values:
                  * - temperature: degrees
                  * - humidity: %RH
@@ -273,17 +260,19 @@ static void worker_task(void *arg)
                          data.gas_resistance,
                          data.status);
 
+                    float ambient = data.temperature + BOARD_TEMP_OFFSET_C;  // Temperature offset compensation
+                    
+                    // Barometer and air quaility loop update
+                    baro_forecast_update_pa(&g_baro, data.pressure);  
+                    float slp_hpa = baro_forecast_slp_hpa(&g_baro);      
+                    air_quality_out_t aq_out = air_quality_update(&g_airq, data.gas_resistance);
 
-                    float ambient = data.temperature + BOARD_TEMP_OFFSET_C;
-                    baro_forecast_update_pa(&g_baro, data.pressure);
-                    air_quality_out_t aq_out =
-                        air_quality_update(&g_airq, data.gas_resistance);
-
+                    // Min max vaule update
                     portENTER_CRITICAL(&g_lock);
-                    minmax_update(&g_minmax, ambient,
-                                  data.humidity, data.pressure);
+                    minmax_update(&g_minmax, ambient, data.humidity, slp_hpa);
                     portEXIT_CRITICAL(&g_lock);
 
+                    // Screen rendering (Screen 1 = Overview, Screen 2 = Min/Max)
                     if (screen == UI_SCREEN_OVERVIEW) {
                         ui_render_frame(&layout, ambient, &data, &g_baro, &aq_out);
                     } else {
@@ -298,11 +287,9 @@ static void worker_task(void *arg)
                         
                     }
                 }
-
                 g_ui_dirty = false;
             }
         }
-
         vTaskDelay(1);
     }
 }
