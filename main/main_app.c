@@ -1,29 +1,21 @@
 /**
  * @file main_app.c
  *
- * @brief This is the main code for my Weather Station project.
- * The project will be controlled with branches in GitHub.
+ * @brief Weather Station main application (ESP32-S3 + BME68x + ST7789)
  *
- * This version uses modules:
- *  - ui.c/.h: display layout + helper print functions (no full-screen clear per update)
- *  - air_quality.c/.h: warmup + baseline + quality text output
- *  - baro_forecast.c/.h: forecasting model 
- * -  pushbuttons.c/.h: XNUCLEO-GFX01M2 "joystick" pushbuttons for min/max display
+ * This version:
+ * - Keeps the proven "real time clock method" timing loop for SENSOR updates
+ * - Uses esp_timer_get_time() to decide when a 1-second SENSOR cycle has elapsed
+ * - Avoids vTaskDelayUntil() drift when SPI drawing takes > 1 second
+ * - Adds X-NUCLEO joystick buttons (active-low) using GPIO interrupts
+ * - Provides serial monitor "button press affirmation" (ESP_LOGI on press) for debug only
+ * - Implements Screen 2 (Min/Max) navigation + reset confirmation workflow
  *
- * IMPORTANT TIMING NOTE (WHY THIS EXISTS):
- * Display writing over SPI can take longer than 1 second. If we try to run a strict 1 Hz
- * periodic task using vTaskDelayUntil() or timer notifications, the task can fall behind.
- *
- * Therefore, we keep the “real time clock method” for timing:
- *  - Use esp_timer_get_time() (microseconds since boot) to decide when the next “cycle”
- *    should run.
- *  - The worker loop runs as fast as it can, and performs a measurement + render only
- *    when at least 1 second has passed since the last cycle.
- *
- * Result:
- *  - If drawing is fast, you get ~1 Hz updates.
- *  - If drawing is slow, you get “best effort” updates with correct real-time behavior.
- *  - Gas warmup and barometer sampling are based on real time, not loop count.
+ * IMPORTANT DESIGN CHOICE (UPDATED, EXPLICIT):
+ * - SENSOR work and UI work are now in SEPARATE TASKS
+ * - Sensor task may BLOCK (BME68X forced read)
+ * - UI task NEVER blocks on sensors
+ * - Buttons therefore ALWAYS overrule sensor timing
  */
 
 #include <stdio.h>
@@ -36,86 +28,104 @@
 #include "esp_err.h"
 #include "esp_timer.h"
 
-// Component includes
+#include "driver/gpio.h" // joystick GPIOs
+
+// User components
 #include "baro_forecast.h"
 #include "bme68x_esp32_i2c.h"
 #include "st7789h2.h"
-
-// New modules
 #include "ui.h"
 #include "air_quality.h"
 
-static const char *TAG = "main_app"; //For generating test strings
+// Buttons + min/max + UI state machine
+#include "pushbuttons.h"
+#include "minmax_stats.h"
+#include "ui_controller.h"
+
+static const char *TAG = "main_app";
+
+static ui_screen_t g_last_screen = UI_SCREEN_OVERVIEW;
+static volatile bool g_ui_dirty = true;   // UI redraw request flag
 
 /* -------------------------------------------------------------------------- */
-/* User configuration section */
+/* User configuration section                                                  */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Font setup for display writing
- *
- * (Still defined here because your temperature formatting originally depended on font width/height.
- * UI module also defines its own copy for local usage. If you want a single definition, move to ui.h.)
+ * Font details external font file
+ * UI module may also define its own
  */
-#define FONT_W 7 // pixels per character at scale=1 (check your font!)
+#define FONT_W 7
 #define FONT_H 5
 
 /**
- * Choose I2C pins that match your wiring on the ESP32S3-DEVKITC.
- * ESP32-S3 allows flexible pin routing for I2C, so you may use other GPIOs.
+ * ESP32-S3 I2C pins
  */
-#define I2C_PORT     I2C_NUM_0
+#define I2C_PORT I2C_NUM_0
 #define I2C_SDA_GPIO GPIO_NUM_8
 #define I2C_SCL_GPIO GPIO_NUM_9
+#define I2C_FREQ_HZ 400000
 
 /**
- * I2C bus speed:
- * - 100kHz is safest
- * - 400kHz is common and should work fine with short wires
+ * Temperature offset for better ambient temperature
+ * (experience showed that -3C works for me)
  */
-#define I2C_FREQ_HZ  400000
-
-/* Sensor object (kept same declaration style) */
-static bme68x_esp32_t g_sensor;
+#define BOARD_TEMP_OFFSET_C (-3.0f)
 
 /**
- * Try to initialize the sensor at a given I2C address.
- * Returns ESP_OK if detected and configured.
+ * Joystick pins
+ * Simple (Active low) connections from the X-NUCLEO Display board to free GPIOs
  */
-static esp_err_t init_at_addr(uint8_t addr)
-{
-    esp_err_t err = bme68x_esp32_init_i2c(&g_sensor,
-                                          I2C_PORT,
-                                          I2C_SDA_GPIO,
-                                          I2C_SCL_GPIO,
-                                          I2C_FREQ_HZ,
-                                          addr);
-    if (err != ESP_OK) return err;
+#define JOY_UP_GPIO    GPIO_NUM_18 // GPIOx_UP
+#define JOY_LEFT_GPIO  GPIO_NUM_17 // GPIOx_LEFT
+#define JOY_RIGHT_GPIO GPIO_NUM_15 // GPIOx_RIGHT
+#define JOY_DOWN_GPIO  GPIO_NUM_16 // GPIOx_DOWN
 
-    /* Apply a default configuration suitable for ~1Hz forced mode sampling */
-    int8_t rslt = bme68x_esp32_configure_default(&g_sensor);
-    if (rslt != BME68X_OK) {
-        ESP_LOGE(TAG, "Sensor configure failed (rslt=%d)", rslt);
-        return ESP_FAIL;
-    }
-    return ESP_OK;
-}
+/* -------------------------------------------------------------------------- */
+/* Global objects/state                                                        */
+/* -------------------------------------------------------------------------- */
+
+static bme68x_esp32_t   g_sensor;
+static baro_forecast_t g_baro;
+static air_quality_t   g_airq;
+static minmax_stats_t  g_minmax;
+static ui_controller_t g_ui;
+static pushbuttons_t   g_pb;
 
 /**
- * SPI Setup for the display XNUCLEO-GFX01M2
+ * Cached "last known good" sensor values
+ * These are written ONLY by the sensor task
+ * and read by the UI task for instant redraws.
  */
-st7789h2_config_t cfg_disp = {
+static bool                g_have_last = false;
+static struct bme68x_data  g_last_data;
+static float               g_last_ambient = 0.0f;
+static air_quality_out_t   g_last_aq;
+
+/**
+ * Small critical section lock:
+ * - sensor task updates shared data
+ * - UI task reads shared data
+ * - button callback updates UI state
+ *
+ * Critical sections are SHORT and COPY-ONLY.
+ */
+static portMUX_TYPE g_lock = portMUX_INITIALIZER_UNLOCKED;
+
+/* -------------------------------------------------------------------------- */
+/* Display config (your existing working config)                               */
+/* -------------------------------------------------------------------------- */
+
+static st7789h2_config_t cfg_disp = {
     .host = SPI2_HOST,
-    // SPI2 IO_MUX defaults on ESP32-S3: CS0=10 MOSI=11 SCLK=12 MISO=13
     .pin_cs = 10,
     .pin_mosi = 11,
     .pin_sclk = 12,
-    .pin_miso = -1, // LCD is write-only here; set to 13 if you actually wire MISO
-    // Use the remaining SPI2 IO_MUX “quad” pins as GPIO for LCD control:
-    .pin_dc = 46,   // GPIO pin 46 used as DC (transferred from GPIO 9 to make room for I2C)
-    .pin_rst = 14,  // QUADWP pin used as RST
-    .pin_bckl = -1, // set to a GPIO if you control backlight
-    .spi_clock_hz = 10 * 1000 * 1000, // start at 10MHz, increase later
+    .pin_miso = -1,
+    .pin_dc = 46,
+    .pin_rst = 14,
+    .pin_bckl = -1,
+    .spi_clock_hz = 10 * 1000 * 1000,
     .spi_mode = 0,
     .width = 240,
     .height = 320,
@@ -123,200 +133,308 @@ st7789h2_config_t cfg_disp = {
     .y_offset = 0,
 };
 
-/**
- * Temperature offset for more correct ambient temperature reading
- * Needed as Gas measurement is a small on chip heater.
- * Generally -3 - 5 C is usable for Heater at 320 °C / 150 ms, 1 Hz sampling
- */
-#define BOARD_TEMP_OFFSET_C (-3.5f)
-
-/**
- * State object for the barometer forcast algoritm
- */
-static baro_forecast_t g_baro;
-
-/**
- * Air quality module state (replaces warmup/baseline globals previously in main)
- */
-static air_quality_t g_airq;
-
 /* -------------------------------------------------------------------------- */
-/* Worker task (real-time driven cycle control) */
+/* Button handling (affirmation + state machine + min/max reset)               */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Worker task responsibilities:
- * - Runs continuously, but only performs a “measurement + update + render” when >= 1 second
- *   has elapsed since the last cycle (based on esp_timer_get_time()).
- * - This prevents drift and avoids “falling behind” when drawing takes > 1 second.
- *
- * Why not vTaskDelayUntil(1000ms)?
- * - If a single iteration takes > 1 second, vTaskDelayUntil can no longer keep a stable period.
- *
- * Why not esp_timer periodic notification?
- * - If the task can't keep up, notifications get coalesced and you lose the relation
- *   between “real time” and “number of cycles executed”.
- */
-static void worker_task(void *arg)
+static void do_reset_for_target(ui_confirm_target_t tgt)
+{
+    portENTER_CRITICAL(&g_lock);
+    switch (tgt) {
+        case UI_CONFIRM_TEMP:  minmax_reset_temp(&g_minmax);  break;
+        case UI_CONFIRM_RH:    minmax_reset_rh(&g_minmax);    break;
+        case UI_CONFIRM_PRESS: minmax_reset_press(&g_minmax); break;
+        default: break;
+    }
+    portEXIT_CRITICAL(&g_lock);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Push button callback function                                               */
+/* -------------------------------------------------------------------------- */
+
+
+/* -------------------------------------------------------------------------- */
+/* Push button callback function                                              */
+/* -------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+/* Push button callback function                                              */
+/* -------------------------------------------------------------------------- */
+static void pb_callback(pb_button_t btn, void *user)
+{
+    (void)user;
+
+    /* ------------------------------------------------------------
+     * Debounce ALL buttons
+     * ------------------------------------------------------------ */
+    static int64_t last_press_us[4] = {0};
+    int64_t now = esp_timer_get_time();
+
+    if (now - last_press_us[btn] < 300000) {
+        return;
+    }
+    last_press_us[btn] = now;
+
+    /* ------------------------------------------------------------
+     * Your existing debug log (PRESERVED EXACTLY)
+     * ------------------------------------------------------------ */
+    ESP_LOGI("BUTTON", "Joystick pressed: %d", btn);
+
+    /* ------------------------------------------------------------
+     * Map button -> UI action
+     * ------------------------------------------------------------ */
+    ui_action_t act =
+        (btn == PB_BTN_UP)    ? UI_ACTION_UP :
+        (btn == PB_BTN_LEFT)  ? UI_ACTION_LEFT :
+        (btn == PB_BTN_RIGHT) ? UI_ACTION_RIGHT :
+                                UI_ACTION_DOWN;
+
+    /* ------------------------------------------------------------
+     * Read confirmation state BEFORE applying action
+     * (This is the key to making "first press shows prompt" reliable)
+     * ------------------------------------------------------------ */
+    bool pre_confirm = false;
+
+    portENTER_CRITICAL(&g_lock);
+    pre_confirm = ui_controller_confirm_active(&g_ui);
+    portEXIT_CRITICAL(&g_lock);
+
+    /* ------------------------------------------------------------
+     * Let controller process the action
+     * Note: handle_action() may return true for multiple reasons,
+     * so we only treat it as "confirm accepted" if pre_confirm was true.
+     * ------------------------------------------------------------ */
+    bool action_returned_true = false;
+
+    portENTER_CRITICAL(&g_lock);
+    action_returned_true = ui_controller_handle_action(&g_ui, act);
+    portEXIT_CRITICAL(&g_lock);
+
+    /* ------------------------------------------------------------
+     * SECOND press handling:
+     * Only reset if confirmation was already active BEFORE this press.
+     * ------------------------------------------------------------ */
+    if (pre_confirm && action_returned_true) {
+
+        if (act == UI_ACTION_LEFT) {
+            do_reset_for_target(UI_CONFIRM_TEMP);
+        } else if (act == UI_ACTION_RIGHT) {
+            do_reset_for_target(UI_CONFIRM_RH);
+        } else if (act == UI_ACTION_DOWN) {
+            do_reset_for_target(UI_CONFIRM_PRESS);
+        }
+
+        /* Make the text disappear */
+        portENTER_CRITICAL(&g_lock);
+        ui_controller_cancel_confirm(&g_ui);
+        portEXIT_CRITICAL(&g_lock);
+    }
+
+    /* ------------------------------------------------------------
+     * ALWAYS request a redraw on any button press
+     * ------------------------------------------------------------ */
+    g_ui_dirty = true;
+}
+
+/* -------------------------------------------------------------------------- */
+/* UI TASK                                                                    */
+/*                                                                            */
+/* - NEVER reads sensors                                                      */
+/* - NEVER blocks on sensor timing                                            */
+/* - Responds immediately to g_ui_dirty                                       */
+/* -------------------------------------------------------------------------- */
+
+static void ui_task(void *arg)
 {
     (void)arg;
 
-    /* Display layout configuration (same idea as your original per-loop setup) */
+    // UI layout shared between screens
     const ui_layout_t layout = {
         .scale = 2,
-        .line_height = (uint16_t)(8 * (2 + 2)), // Seems to be a good line distance
+        .line_height = (uint16_t)(8 * (2 + 2)),
         .y_pos_start = 10,
         .x_pos = 25
     };
 
-    /* Real-time cycle tracking (microseconds since boot) */
-    int64_t last_cycle_us = 0;
-
     while (1) {
 
-        /* Always compute time first (real time microseconds since boot) */
-        int64_t now_us = esp_timer_get_time();
+        if (g_ui_dirty) {
 
-        /* First run: execute immediately and seed last_cycle_us */
-        if (last_cycle_us == 0) {
-            last_cycle_us = now_us;
-        }
+            ui_screen_t screen;
+            bool screen_changed = false;
 
-        /*
-         * Only run a full cycle when 1 second has elapsed.
-         * If rendering is slow, cycles will be less frequent, but timing remains correct.
-         */
-        if ((now_us - last_cycle_us) >= 1000000) {
-
-            /*
-             * Update last_cycle_us in a “best effort” way:
-             * - We set it to now_us (not last_cycle_us += 1e6),
-             *   because if the loop is slow we don't want to try to "catch up"
-             *   by doing multiple back-to-back renders.
-             */
-            last_cycle_us = now_us;
-
-            struct bme68x_data data;
-
-            /*
-             * Perform one forced-mode measurement.
-             * In forced mode, the sensor runs one TPHG measurement cycle and returns to sleep.
-             */
-            int8_t rslt = bme68x_esp32_read_forced(&g_sensor, &data);
-
-            if (rslt == BME68X_OK) {
-
-                /*
-                 * With BME68X_USE_FPU enabled, the Bosch driver produces floating-point values:
-                 * - temperature: degrees
-                 * - humidity: %RH
-                 * - pressure: Pa
-                 * - gas_resistance: Ohms
-                 */
-                //ESP_LOGI(TAG,
-                //         "T=%.2fC RH=%.2f%% P=%.2fPa Gas=%.0fOhm status=0x%02X",
-                //         data.temperature,
-                //         data.humidity,
-                //         data.pressure,
-                //         data.gas_resistance,
-                //         data.status);
-
-                /* Ambient temperature is the raw temperature minus the static offset (Adjust if necessary) */
-                float ambient_temp = data.temperature + BOARD_TEMP_OFFSET_C;
-
-                /*
-                 * Barometer forecast evaluation:
-                 * - Call every cycle (it internally stores only once per sample period, e.g. 60s)
-                 */
-                baro_forecast_update_pa(&g_baro, data.pressure);
-
-                /*
-                 * Air quality warmup/baseline update:
-                 * - Uses esp_timer_get_time() internally to decide warmup completion
-                 * - Returns either "Warming up..." or a quality label
-                 */
-                air_quality_out_t aq_out = air_quality_update(&g_airq, data.gas_resistance);
-
-                /*
-                 * Render to display:
-                 * - No full-screen clears (avoids blinking)
-                 * - Text is drawn with background color so it overwrites previous text
-                 */
-                ui_render_frame(&layout, ambient_temp, &data, &g_baro, &aq_out);
-
-            } else if (rslt == BME68X_W_NO_NEW_DATA) {
-                ESP_LOGW(TAG, "No new data (sensor still busy or timing issue).");
-            } else {
-                ESP_LOGE(TAG, "Read failed (rslt=%d)", rslt);
+            /* --------------------------------------------------------
+             * Read screen state
+             * -------------------------------------------------------- */
+            portENTER_CRITICAL(&g_lock);
+            screen = ui_controller_screen(&g_ui);
+            if (screen != g_last_screen) {
+                g_last_screen = screen;
+                screen_changed = true;
             }
+            portEXIT_CRITICAL(&g_lock);
+
+            /* --------------------------------------------------------
+             * Read confirmation state
+             * -------------------------------------------------------- */
+            bool confirm;
+            ui_confirm_target_t tgt;
+
+            portENTER_CRITICAL(&g_lock);
+            confirm = ui_controller_confirm_active(&g_ui);
+            tgt     = ui_controller_confirm_target(&g_ui);
+            portEXIT_CRITICAL(&g_lock);
+
+            if (screen_changed) {
+                st7789h2_fill(0x0000);
+            }
+
+            ESP_LOGI(TAG, "Rendering screen=%d", screen);
+
+            if (screen == UI_SCREEN_OVERVIEW) {
+
+                if (g_have_last) {
+                    ui_render_frame(&layout,
+                                    g_last_ambient,
+                                    &g_last_data,
+                                    &g_baro,
+                                    &g_last_aq);
+                }
+
+            } else {
+
+                ui_render_minmax(&layout, &g_minmax, confirm, tgt);
+            }
+
+            g_ui_dirty = false;
         }
 
-        /*
-         * Always yield a little so other RTOS/IDF tasks can run (WiFi, timers, etc.).
-         * This does NOT define timing; timing is controlled by esp_timer_get_time().
-         */
         vTaskDelay(1);
     }
 }
 
 /* -------------------------------------------------------------------------- */
-/* Main application */
+/* SENSOR TASK                                                                */
+/*                                                                            */
+/* - Runs the blocking BME68X forced read                                     */
+/* - Updates models and min/max                                               */
+/* - Signals UI redraw when new data arrives                                  */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Main application containing initialization.
- * After init, it starts the worker task.
- */
+static void sensor_task(void *arg)
+{
+    (void)arg;
+
+    int64_t last_cycle_us = 0;
+
+    while (1) {
+
+        int64_t now_us = esp_timer_get_time();
+
+        if (last_cycle_us == 0 ||
+            (now_us - last_cycle_us) >= 1000000) {
+
+            last_cycle_us = now_us;
+
+            struct bme68x_data data;
+            int8_t rslt = bme68x_esp32_read_forced(&g_sensor, &data);
+
+            if (rslt == BME68X_OK) {
+
+                ESP_LOGI(TAG,
+                         "T=%.2fC RH=%.2f%% P=%.2fPa Gas=%.0fOhm status=0x%02X",
+                         data.temperature,
+                         data.humidity,
+                         data.pressure,
+                         data.gas_resistance,
+                         data.status);
+
+                float ambient = data.temperature + BOARD_TEMP_OFFSET_C;
+
+                /* ----------------------------------------------------
+                 * Update models
+                 * ---------------------------------------------------- */
+                baro_forecast_update_pa(&g_baro, data.pressure);
+                float slp_hpa = baro_forecast_slp_hpa(&g_baro);
+                air_quality_out_t aq_out =
+                    air_quality_update(&g_airq, data.gas_resistance);
+
+                /* ----------------------------------------------------
+                 * Update min/max
+                 * ---------------------------------------------------- */
+                portENTER_CRITICAL(&g_lock);
+                minmax_update(&g_minmax, ambient,
+                              data.humidity, slp_hpa);
+                portEXIT_CRITICAL(&g_lock);
+
+                /* ----------------------------------------------------
+                 * Cache last known values for UI
+                 * ---------------------------------------------------- */
+                g_last_data    = data;
+                g_last_ambient = ambient;
+                g_last_aq      = aq_out;
+                g_have_last    = true;
+
+                /* ----------------------------------------------------
+                 * Ask UI task to redraw
+                 * ---------------------------------------------------- */
+                g_ui_dirty = true;
+            }
+        }
+
+        vTaskDelay(1);
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* app_main: init everything and start tasks                                   */
+/* -------------------------------------------------------------------------- */
+
 void app_main(void)
 {
-    /*
-     * Display init
-     */
     ESP_ERROR_CHECK(st7789h2_init(&cfg_disp));
-    st7789h2_fill(0x0000); //Fill the display background black once in the code history
+    st7789h2_fill(0x0000);
 
-    /*
-     * The SEN-BME680 manual states default I2C address is 0x77,
-     * but it can be changed to 0x76 by wiring SDO to GND
-     *
-     * To make the code robust, we probe both.
-     */
-    esp_err_t err = init_at_addr(0x77);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "No sensor at 0x77. Trying 0x76...");
-        err = init_at_addr(0x76);
-    }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "BME680 not found at 0x77 or 0x76. Check wiring/pins/power.");
-        return;
-    }
+    ESP_ERROR_CHECK(bme68x_esp32_init_i2c(&g_sensor,
+                                         I2C_PORT,
+                                         I2C_SDA_GPIO,
+                                         I2C_SCL_GPIO,
+                                         I2C_FREQ_HZ,
+                                         0x77));
 
-    ESP_LOGI(TAG, "Starting worker task (real-time driven timing)...");
+    bme68x_esp32_configure_default(&g_sensor);
 
-    // Configure barometer settings
     baro_config_t cfg_baro = {
-        .altitude_m = 80.0f,              // <-- set your elevation here (~80 meter @ home in Højbjerg)
-        .sample_period_s = 60,            // store 1 sample / minute
-        .ema_alpha = 0.05f,               // smoothing (tweak 0.02..0.10)
-        .enable_sea_level_correction = true // use SLP for buckets/trends
+        .altitude_m = 80.0f,
+        .sample_period_s = 60,
+        .ema_alpha = 0.05f,
+        .enable_sea_level_correction = true
     };
     baro_forecast_init(&g_baro, &cfg_baro);
 
-    /*
-     * Air quality module init:
-     * - Warmup timing uses esp_timer_get_time() internally
-     * - baseline becomes valid after warmup_time_sec
-     */
     air_quality_cfg_t aq_cfg = {
-        .warmup_time_sec = 30 * 60, // Gas warmup time (30 minutes is a good amount)
-        .baseline_alpha = 0.01f     // running average weight (slow & stable)
+        .warmup_time_sec = 30 * 60,
+        .baseline_alpha = 0.01f
     };
     air_quality_init(&g_airq, &aq_cfg);
 
-    /*
-     * Create worker task:
-     * - All sampling + model updates + display rendering happens inside worker_task.
-     * - Timing is based on esp_timer_get_time().
-     */
-    xTaskCreate(worker_task, "worker_task", 4096, NULL, 5, NULL);
+    minmax_init(&g_minmax);
+    ui_controller_init(&g_ui);
+
+    pb_config_t pb_cfg = {
+        .pin_up    = JOY_UP_GPIO,
+        .pin_left  = JOY_LEFT_GPIO,
+        .pin_right = JOY_RIGHT_GPIO,
+        .pin_down  = JOY_DOWN_GPIO,
+        .debounce_ms = 50
+    };
+
+    ESP_ERROR_CHECK(pushbuttons_init(&g_pb, &pb_cfg, pb_callback, NULL));
+    ESP_ERROR_CHECK(pushbuttons_start_task(&g_pb, "btn_task", 4096, 6));
+
+    /* --------------------------------------------------------------
+     * Start tasks
+     * -------------------------------------------------------------- */
+    xTaskCreate(ui_task,     "ui_task",     4096, NULL, 5, NULL);
+    xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 4, NULL);
 }

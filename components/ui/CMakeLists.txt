@@ -1,16 +1,14 @@
 idf_component_register(
     SRCS
-        "main_app.c"
+        "ui.c"
     INCLUDE_DIRS
         "."
     REQUIRES
-        baro_forecast
-        air_quality
         st7789h2
         bme68x
-        ui
-        ui_controller
+        baro_forecast
+        air_quality
         minmax_stats
-        pushbuttons
+        ui_controller
         esp_timer
 )

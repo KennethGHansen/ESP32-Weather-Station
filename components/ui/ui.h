@@ -4,19 +4,22 @@
 #include "bme68x.h"
 #include "air_quality.h"
 
+/* NEW includes for min/max screen */
+#include "minmax_stats.h"
+#include "ui_controller.h"
+
 /**
  * @file ui.h
  *
  * @brief UI module:
- *  - Owns display layout (x/y positioning, line spacing)
- *  - Owns helper string formatting and drawing
+ * - Owns display layout (x/y positioning, line spacing)
+ * - Owns helper string formatting and drawing
  *
  * IMPORTANT:
  * We do NOT clear the entire screen per update because the display is pixel-write over SPI
  * and that would cause blinking. Each printed line is drawn with background color, so new
  * text overwrites old text cleanly.
  */
-
 typedef struct
 {
     uint8_t  scale;
@@ -34,3 +37,9 @@ void ui_render_frame(const ui_layout_t *layout,
                      const struct bme68x_data *data,
                      const baro_forecast_t *baro,
                      const air_quality_out_t *aq_out);
+
+/* NEW: render Screen 2 (min/max + confirm prompt) */
+void ui_render_minmax(const ui_layout_t *layout,
+                      const minmax_stats_t *s,
+                      bool confirm_active,
+                      ui_confirm_target_t confirm_target);
