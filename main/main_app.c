@@ -188,6 +188,9 @@ static void pb_callback(pb_button_t btn, void *user)
 /* Worker task: reads sensor and renders active screen                        */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* Worker task: reads sensor and renders active screen                         */
+/* -------------------------------------------------------------------------- */
 static void worker_task(void *arg)
 {
     (void)arg;
@@ -203,24 +206,27 @@ static void worker_task(void *arg)
     int64_t last_cycle_us = 0;
 
     while (1) {
+
         int64_t now_us = esp_timer_get_time();
 
-        if (last_cycle_us == 0 || (now_us - last_cycle_us) >= 1000000) {
+        if (last_cycle_us == 0 ||
+            (now_us - last_cycle_us) >= 1000000)
+        {
             last_cycle_us = now_us;
 
             struct bme68x_data data;
             int8_t rslt = bme68x_esp32_read_forced(&g_sensor, &data);
 
             bool do_render = (rslt == BME68X_OK) || g_ui_dirty;
-            
-            ESP_LOGI(TAG,"do_render=%d rslt=%d g_ui_dirty=%d", do_render, rslt, g_ui_dirty);
 
+            ESP_LOGI(TAG, "do_render=%d rslt=%d g_ui_dirty=%d", do_render, rslt, g_ui_dirty);
 
-            if (do_render) {
-
+            if (do_render)
+            {
                 ui_screen_t screen;
                 bool screen_changed = false;
 
+                // Read current screen state
                 portENTER_CRITICAL(&g_lock);
                 screen = ui_controller_screen(&g_ui);
                 if (screen != g_last_screen) {
@@ -229,45 +235,47 @@ static void worker_task(void *arg)
                 }
                 portEXIT_CRITICAL(&g_lock);
 
+                // Read confirmation state
                 bool confirm;
                 ui_confirm_target_t tgt;
 
                 portENTER_CRITICAL(&g_lock);
                 confirm = ui_controller_confirm_active(&g_ui);
-                tgt     = ui_controller_confirm_target(&g_ui);
+                tgt = ui_controller_confirm_target(&g_ui);
                 portEXIT_CRITICAL(&g_lock);
 
+                // Clear screen ONLY on screen change
                 if (screen_changed) {
-                    st7789h2_fill(0x0000);   // NEW: moved out of critical section
+                    st7789h2_fill(0x0000); // moved out of critical section
                 }
 
                 ESP_LOGI(TAG, "Rendering screen=%d", screen);
 
-                if (rslt == BME68X_OK) {
+                if (rslt == BME68X_OK)
+                {
+                    /*
+                     * With BME68X_USE_FPU enabled, the Bosch driver produces floating-point values:
+                     * - temperature: degrees
+                     * - humidity: %RH
+                     * - pressure: Pa
+                     * - gas_resistance: Ohms
+                     */
+                    ESP_LOGI(TAG,
+                             "T=%.2fC RH=%.2f%% P=%.2fPa Gas=%.0fOhm status=0x%02X",
+                             data.temperature,
+                             data.humidity,
+                             data.pressure,
+                             data.gas_resistance,
+                             data.status);
 
-                /*
-                 * With BME68X_USE_FPU enabled, the Bosch driver produces floating-point values:
-                 * - temperature: degrees
-                 * - humidity: %RH
-                 * - pressure: Pa
-                 * - gas_resistance: Ohms
-                 */
-                ESP_LOGI(TAG,
-                         "T=%.2fC RH=%.2f%% P=%.2fPa Gas=%.0fOhm status=0x%02X",
-                         data.temperature,
-                         data.humidity,
-                         data.pressure,
-                         data.gas_resistance,
-                         data.status);
+                    float ambient = data.temperature + BOARD_TEMP_OFFSET_C; // Temperature offset compensation
 
-                    float ambient = data.temperature + BOARD_TEMP_OFFSET_C;  // Temperature offset compensation
-                    
-                    // Barometer and air quaility loop update
-                    baro_forecast_update_pa(&g_baro, data.pressure);  
-                    float slp_hpa = baro_forecast_slp_hpa(&g_baro);      
+                    // Barometer and air quality loop update
+                    baro_forecast_update_pa(&g_baro, data.pressure);
+                    float slp_hpa = baro_forecast_slp_hpa(&g_baro); 
                     air_quality_out_t aq_out = air_quality_update(&g_airq, data.gas_resistance);
 
-                    // Min max vaule update
+                    // Min max value update
                     portENTER_CRITICAL(&g_lock);
                     minmax_update(&g_minmax, ambient, data.humidity, slp_hpa);
                     portEXIT_CRITICAL(&g_lock);
@@ -276,20 +284,22 @@ static void worker_task(void *arg)
                     if (screen == UI_SCREEN_OVERVIEW) {
                         ui_render_frame(&layout, ambient, &data, &g_baro, &aq_out);
                     } else {
-                        //ui_render_minmax(&layout, &g_minmax, false, UI_CONFIRM_NONE);
                         ui_render_minmax(&layout, &g_minmax, confirm, tgt);
-                    }
-                } else {
-                    if (screen == UI_SCREEN_MINMAX) {
-                        ESP_LOGI(TAG, "Screen2 render: confirm=%d target=%d", confirm, tgt);
-                        //ui_render_minmax(&layout, &g_minmax, false, UI_CONFIRM_NONE);
-                        ui_render_minmax(&layout, &g_minmax, confirm, tgt);
-                        
                     }
                 }
+                else
+                {
+                    // If no new sensor data, still allow Screen 2 prompt updates (uses confirm/tgt)
+                    if (screen == UI_SCREEN_MINMAX) {
+                        ESP_LOGI(TAG, "Screen2 render: confirm=%d target=%d", confirm, tgt);
+                        ui_render_minmax(&layout, &g_minmax, confirm, tgt);
+                    }
+                }
+
                 g_ui_dirty = false;
             }
         }
+
         vTaskDelay(1);
     }
 }

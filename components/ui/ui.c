@@ -224,12 +224,6 @@ void ui_render_minmax(const ui_layout_t *layout,
         snprintf(buf, sizeof(buf), "Press %s again", btn);
         st7789h2_draw_string_scaled(x, y, buf, UI_WARN, UI_BG, scale);
 
-        //snprintf(buf, sizeof(buf), "Reset %s? Press %s again", what, btn);
-        //st7789h2_draw_string_scaled(x, y, buf, UI_WARN, UI_BG, scale);
-        //y += lh;
-
-
-
     } else {
 
         /* Clear old confirmation area */
