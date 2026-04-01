@@ -4,17 +4,18 @@
  * @brief Weather Station main application (ESP32-S3 + BME68x + ST7789)
  *
  * This version:
- * - Keeps the proven "real time clock method" timing loop:
- * - Uses esp_timer_get_time() to decide when a 1-second cycle has elapsed.
- * - Avoids vTaskDelayUntil() drift when SPI drawing takes > 1 second.
- * - Adds X-NUCLEO joystick buttons (active-low) using GPIO interrupts.
+ * - Keeps the proven "real time clock method" timing loop for SENSOR updates
+ * - Uses esp_timer_get_time() to decide when a 1-second SENSOR cycle has elapsed
+ * - Avoids vTaskDelayUntil() drift when SPI drawing takes > 1 second
+ * - Adds X-NUCLEO joystick buttons (active-low) using GPIO interrupts
  * - Provides serial monitor "button press affirmation" (ESP_LOGI on press) for debug only
- * - Implements Screen 2 (Min/Max) navigation + reset confirmation workflow.
+ * - Implements Screen 2 (Min/Max) navigation + reset confirmation workflow
  *
- * IMPORTANT DESIGN CHOICE:
- * - Worker task continues reading sensor data even while Screen 2 is active.
- * - But when Screen 2 is active, we do NOT render/update Screen 1.
- * - (We render Screen 2 instead.)
+ * IMPORTANT DESIGN CHOICE (UPDATED, EXPLICIT):
+ * - SENSOR work and UI work are now in SEPARATE TASKS
+ * - Sensor task may BLOCK (BME68X forced read)
+ * - UI task NEVER blocks on sensors
+ * - Buttons therefore ALWAYS overrule sensor timing
  */
 
 #include <stdio.h>
@@ -22,9 +23,11 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_timer.h"
+
 #include "driver/gpio.h" // joystick GPIOs
 
 // User components
@@ -33,12 +36,14 @@
 #include "st7789h2.h"
 #include "ui.h"
 #include "air_quality.h"
+
 // Buttons + min/max + UI state machine
 #include "pushbuttons.h"
 #include "minmax_stats.h"
 #include "ui_controller.h"
 
 static const char *TAG = "main_app";
+
 static ui_screen_t g_last_screen = UI_SCREEN_OVERVIEW;
 static volatile bool g_ui_dirty = true;   // UI redraw request flag
 
@@ -62,7 +67,8 @@ static volatile bool g_ui_dirty = true;   // UI redraw request flag
 #define I2C_FREQ_HZ 400000
 
 /**
- * Temperature offset for better ambient temperature (experience showed that -3C works for me)
+ * Temperature offset for better ambient temperature
+ * (experience showed that -3C works for me)
  */
 #define BOARD_TEMP_OFFSET_C (-3.0f)
 
@@ -79,20 +85,30 @@ static volatile bool g_ui_dirty = true;   // UI redraw request flag
 /* Global objects/state                                                        */
 /* -------------------------------------------------------------------------- */
 
-static bme68x_esp32_t g_sensor;
+static bme68x_esp32_t   g_sensor;
 static baro_forecast_t g_baro;
-static air_quality_t g_airq;
-static minmax_stats_t g_minmax;
+static air_quality_t   g_airq;
+static minmax_stats_t  g_minmax;
 static ui_controller_t g_ui;
-static pushbuttons_t g_pb;
+static pushbuttons_t   g_pb;
+
+/**
+ * Cached "last known good" sensor values
+ * These are written ONLY by the sensor task
+ * and read by the UI task for instant redraws.
+ */
+static bool                g_have_last = false;
+static struct bme68x_data  g_last_data;
+static float               g_last_ambient = 0.0f;
+static air_quality_out_t   g_last_aq;
 
 /**
  * Small critical section lock:
- * - worker task updates minmax & reads UI state
- * - button callback updates UI state & triggers resets
+ * - sensor task updates shared data
+ * - UI task reads shared data
+ * - button callback updates UI state
  *
- * We keep critical sections extremely short (copy snapshot + state flags),
- * so we never block sensor reads or SPI drawing.
+ * Critical sections are SHORT and COPY-ONLY.
  */
 static portMUX_TYPE g_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -118,21 +134,29 @@ static st7789h2_config_t cfg_disp = {
 };
 
 /* -------------------------------------------------------------------------- */
-/* Button handling (affirmation + state machine + min/max reset)              */
+/* Button handling (affirmation + state machine + min/max reset)               */
 /* -------------------------------------------------------------------------- */
 
 static void do_reset_for_target(ui_confirm_target_t tgt)
 {
     portENTER_CRITICAL(&g_lock);
     switch (tgt) {
-        case UI_CONFIRM_TEMP: minmax_reset_temp(&g_minmax); break;
-        case UI_CONFIRM_RH: minmax_reset_rh(&g_minmax); break;
+        case UI_CONFIRM_TEMP:  minmax_reset_temp(&g_minmax);  break;
+        case UI_CONFIRM_RH:    minmax_reset_rh(&g_minmax);    break;
         case UI_CONFIRM_PRESS: minmax_reset_press(&g_minmax); break;
         default: break;
     }
     portEXIT_CRITICAL(&g_lock);
 }
 
+/* -------------------------------------------------------------------------- */
+/* Push button callback function                                               */
+/* -------------------------------------------------------------------------- */
+
+
+/* -------------------------------------------------------------------------- */
+/* Push button callback function                                              */
+/* -------------------------------------------------------------------------- */
 /* -------------------------------------------------------------------------- */
 /* Push button callback function                                              */
 /* -------------------------------------------------------------------------- */
@@ -152,13 +176,8 @@ static void pb_callback(pb_button_t btn, void *user)
     last_press_us[btn] = now;
 
     /* ------------------------------------------------------------
-     * Read current screen state
+     * Your existing debug log (PRESERVED EXACTLY)
      * ------------------------------------------------------------ */
-    ui_screen_t current_screen;
-    portENTER_CRITICAL(&g_lock);
-    current_screen = ui_controller_screen(&g_ui);
-    portEXIT_CRITICAL(&g_lock);
-
     ESP_LOGI("BUTTON", "Joystick pressed: %d", btn);
 
     /* ------------------------------------------------------------
@@ -171,13 +190,46 @@ static void pb_callback(pb_button_t btn, void *user)
                                 UI_ACTION_DOWN;
 
     /* ------------------------------------------------------------
-     * Apply UI action
-     * - UP is always allowed
-     * - LEFT / RIGHT / DOWN only allowed on Screen 2
+     * Read confirmation state BEFORE applying action
+     * (This is the key to making "first press shows prompt" reliable)
      * ------------------------------------------------------------ */
+    bool pre_confirm = false;
+
     portENTER_CRITICAL(&g_lock);
-    ui_controller_handle_action(&g_ui, act);
+    pre_confirm = ui_controller_confirm_active(&g_ui);
     portEXIT_CRITICAL(&g_lock);
+
+    /* ------------------------------------------------------------
+     * Let controller process the action
+     * Note: handle_action() may return true for multiple reasons,
+     * so we only treat it as "confirm accepted" if pre_confirm was true.
+     * ------------------------------------------------------------ */
+    bool action_returned_true = false;
+
+    portENTER_CRITICAL(&g_lock);
+    action_returned_true = ui_controller_handle_action(&g_ui, act);
+    portEXIT_CRITICAL(&g_lock);
+
+    /* ------------------------------------------------------------
+     * SECOND press handling:
+     * Only reset if confirmation was already active BEFORE this press.
+     * ------------------------------------------------------------ */
+    if (pre_confirm && action_returned_true) {
+
+        if (act == UI_ACTION_LEFT) {
+            do_reset_for_target(UI_CONFIRM_TEMP);
+        } else if (act == UI_ACTION_RIGHT) {
+            do_reset_for_target(UI_CONFIRM_RH);
+        } else if (act == UI_ACTION_DOWN) {
+            do_reset_for_target(UI_CONFIRM_PRESS);
+        }
+
+        /* Make the text disappear */
+        portENTER_CRITICAL(&g_lock);
+        ui_controller_cancel_confirm(&g_ui);
+        portEXIT_CRITICAL(&g_lock);
+    }
+
     /* ------------------------------------------------------------
      * ALWAYS request a redraw on any button press
      * ------------------------------------------------------------ */
@@ -185,23 +237,93 @@ static void pb_callback(pb_button_t btn, void *user)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Worker task: reads sensor and renders active screen                        */
+/* UI TASK                                                                    */
+/*                                                                            */
+/* - NEVER reads sensors                                                      */
+/* - NEVER blocks on sensor timing                                            */
+/* - Responds immediately to g_ui_dirty                                       */
 /* -------------------------------------------------------------------------- */
 
-/* -------------------------------------------------------------------------- */
-/* Worker task: reads sensor and renders active screen                         */
-/* -------------------------------------------------------------------------- */
-static void worker_task(void *arg)
+static void ui_task(void *arg)
 {
     (void)arg;
 
-    // UI setup and start point for both screen 1 and 2
+    // UI layout shared between screens
     const ui_layout_t layout = {
         .scale = 2,
         .line_height = (uint16_t)(8 * (2 + 2)),
         .y_pos_start = 10,
         .x_pos = 25
     };
+
+    while (1) {
+
+        if (g_ui_dirty) {
+
+            ui_screen_t screen;
+            bool screen_changed = false;
+
+            /* --------------------------------------------------------
+             * Read screen state
+             * -------------------------------------------------------- */
+            portENTER_CRITICAL(&g_lock);
+            screen = ui_controller_screen(&g_ui);
+            if (screen != g_last_screen) {
+                g_last_screen = screen;
+                screen_changed = true;
+            }
+            portEXIT_CRITICAL(&g_lock);
+
+            /* --------------------------------------------------------
+             * Read confirmation state
+             * -------------------------------------------------------- */
+            bool confirm;
+            ui_confirm_target_t tgt;
+
+            portENTER_CRITICAL(&g_lock);
+            confirm = ui_controller_confirm_active(&g_ui);
+            tgt     = ui_controller_confirm_target(&g_ui);
+            portEXIT_CRITICAL(&g_lock);
+
+            if (screen_changed) {
+                st7789h2_fill(0x0000);
+            }
+
+            ESP_LOGI(TAG, "Rendering screen=%d", screen);
+
+            if (screen == UI_SCREEN_OVERVIEW) {
+
+                if (g_have_last) {
+                    ui_render_frame(&layout,
+                                    g_last_ambient,
+                                    &g_last_data,
+                                    &g_baro,
+                                    &g_last_aq);
+                }
+
+            } else {
+
+                ui_render_minmax(&layout, &g_minmax, confirm, tgt);
+            }
+
+            g_ui_dirty = false;
+        }
+
+        vTaskDelay(1);
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* SENSOR TASK                                                                */
+/*                                                                            */
+/* - Runs the blocking BME68X forced read                                     */
+/* - Updates models and min/max                                               */
+/* - Signals UI redraw when new data arrives                                  */
+/* -------------------------------------------------------------------------- */
+
+static void sensor_task(void *arg)
+{
+    (void)arg;
 
     int64_t last_cycle_us = 0;
 
@@ -210,93 +332,53 @@ static void worker_task(void *arg)
         int64_t now_us = esp_timer_get_time();
 
         if (last_cycle_us == 0 ||
-            (now_us - last_cycle_us) >= 1000000)
-        {
+            (now_us - last_cycle_us) >= 1000000) {
+
             last_cycle_us = now_us;
 
             struct bme68x_data data;
             int8_t rslt = bme68x_esp32_read_forced(&g_sensor, &data);
 
-            bool do_render = (rslt == BME68X_OK) || g_ui_dirty;
+            if (rslt == BME68X_OK) {
 
-            ESP_LOGI(TAG, "do_render=%d rslt=%d g_ui_dirty=%d", do_render, rslt, g_ui_dirty);
+                ESP_LOGI(TAG,
+                         "T=%.2fC RH=%.2f%% P=%.2fPa Gas=%.0fOhm status=0x%02X",
+                         data.temperature,
+                         data.humidity,
+                         data.pressure,
+                         data.gas_resistance,
+                         data.status);
 
-            if (do_render)
-            {
-                ui_screen_t screen;
-                bool screen_changed = false;
+                float ambient = data.temperature + BOARD_TEMP_OFFSET_C;
 
-                // Read current screen state
+                /* ----------------------------------------------------
+                 * Update models
+                 * ---------------------------------------------------- */
+                baro_forecast_update_pa(&g_baro, data.pressure);
+                float slp_hpa = baro_forecast_slp_hpa(&g_baro);
+                air_quality_out_t aq_out =
+                    air_quality_update(&g_airq, data.gas_resistance);
+
+                /* ----------------------------------------------------
+                 * Update min/max
+                 * ---------------------------------------------------- */
                 portENTER_CRITICAL(&g_lock);
-                screen = ui_controller_screen(&g_ui);
-                if (screen != g_last_screen) {
-                    g_last_screen = screen;
-                    screen_changed = true;
-                }
+                minmax_update(&g_minmax, ambient,
+                              data.humidity, slp_hpa);
                 portEXIT_CRITICAL(&g_lock);
 
-                // Read confirmation state
-                bool confirm;
-                ui_confirm_target_t tgt;
+                /* ----------------------------------------------------
+                 * Cache last known values for UI
+                 * ---------------------------------------------------- */
+                g_last_data    = data;
+                g_last_ambient = ambient;
+                g_last_aq      = aq_out;
+                g_have_last    = true;
 
-                portENTER_CRITICAL(&g_lock);
-                confirm = ui_controller_confirm_active(&g_ui);
-                tgt = ui_controller_confirm_target(&g_ui);
-                portEXIT_CRITICAL(&g_lock);
-
-                // Clear screen ONLY on screen change
-                if (screen_changed) {
-                    st7789h2_fill(0x0000); // moved out of critical section
-                }
-
-                ESP_LOGI(TAG, "Rendering screen=%d", screen);
-
-                if (rslt == BME68X_OK)
-                {
-                    /*
-                     * With BME68X_USE_FPU enabled, the Bosch driver produces floating-point values:
-                     * - temperature: degrees
-                     * - humidity: %RH
-                     * - pressure: Pa
-                     * - gas_resistance: Ohms
-                     */
-                    ESP_LOGI(TAG,
-                             "T=%.2fC RH=%.2f%% P=%.2fPa Gas=%.0fOhm status=0x%02X",
-                             data.temperature,
-                             data.humidity,
-                             data.pressure,
-                             data.gas_resistance,
-                             data.status);
-
-                    float ambient = data.temperature + BOARD_TEMP_OFFSET_C; // Temperature offset compensation
-
-                    // Barometer and air quality loop update
-                    baro_forecast_update_pa(&g_baro, data.pressure);
-                    float slp_hpa = baro_forecast_slp_hpa(&g_baro); 
-                    air_quality_out_t aq_out = air_quality_update(&g_airq, data.gas_resistance);
-
-                    // Min max value update
-                    portENTER_CRITICAL(&g_lock);
-                    minmax_update(&g_minmax, ambient, data.humidity, slp_hpa);
-                    portEXIT_CRITICAL(&g_lock);
-
-                    // Screen rendering (Screen 1 = Overview, Screen 2 = Min/Max)
-                    if (screen == UI_SCREEN_OVERVIEW) {
-                        ui_render_frame(&layout, ambient, &data, &g_baro, &aq_out);
-                    } else {
-                        ui_render_minmax(&layout, &g_minmax, confirm, tgt);
-                    }
-                }
-                else
-                {
-                    // If no new sensor data, still allow Screen 2 prompt updates (uses confirm/tgt)
-                    if (screen == UI_SCREEN_MINMAX) {
-                        ESP_LOGI(TAG, "Screen2 render: confirm=%d target=%d", confirm, tgt);
-                        ui_render_minmax(&layout, &g_minmax, confirm, tgt);
-                    }
-                }
-
-                g_ui_dirty = false;
+                /* ----------------------------------------------------
+                 * Ask UI task to redraw
+                 * ---------------------------------------------------- */
+                g_ui_dirty = true;
             }
         }
 
@@ -340,15 +422,19 @@ void app_main(void)
     ui_controller_init(&g_ui);
 
     pb_config_t pb_cfg = {
-        .pin_up = JOY_UP_GPIO,
-        .pin_left = JOY_LEFT_GPIO,
+        .pin_up    = JOY_UP_GPIO,
+        .pin_left  = JOY_LEFT_GPIO,
         .pin_right = JOY_RIGHT_GPIO,
-        .pin_down = JOY_DOWN_GPIO,
+        .pin_down  = JOY_DOWN_GPIO,
         .debounce_ms = 50
     };
 
     ESP_ERROR_CHECK(pushbuttons_init(&g_pb, &pb_cfg, pb_callback, NULL));
     ESP_ERROR_CHECK(pushbuttons_start_task(&g_pb, "btn_task", 4096, 6));
 
-    xTaskCreate(worker_task, "worker_task", 4096, NULL, 5, NULL);
+    /* --------------------------------------------------------------
+     * Start tasks
+     * -------------------------------------------------------------- */
+    xTaskCreate(ui_task,     "ui_task",     4096, NULL, 5, NULL);
+    xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 4, NULL);
 }
