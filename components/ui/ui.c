@@ -241,6 +241,7 @@ void ui_render_minmax(const ui_layout_t *layout,
 
     } else {
         /* Clear old confirmation area (unchanged from your code) */
+        y += lh;
         ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "");
         y += lh;
         ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "");
