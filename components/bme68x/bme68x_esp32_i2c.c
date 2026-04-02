@@ -269,3 +269,56 @@ int8_t bme68x_esp32_read_forced(bme68x_esp32_t *s, struct bme68x_data *out)
 
     return BME68X_OK;
 }
+
+/* ---------------------------------------------------------------------------------*/
+/* Non-blocking helpers for decoupling measurement trigger vs. readout              */
+/* Use instead of bme68x_esp32_read_forced to ensure faster button/screen update    */
+/* -------------------------------------------------------------------------------- */
+
+/* 1) Trigger forced measurement (no waiting) */
+int8_t bme68x_esp32_trigger_forced(bme68x_esp32_t *s)
+{
+    if (!s) return BME68X_E_NULL_PTR;
+    return bme68x_set_op_mode(BME68X_FORCED_MODE, &s->dev);
+}
+
+/* 2) Compute how long we should wait (us) before reading */
+uint32_t bme68x_esp32_forced_duration_us(bme68x_esp32_t *s)
+{
+    if (!s) return 0;
+
+    /* 1) Base TPH (temperature / pressure / humidity) duration */
+    uint32_t tph_us = bme68x_get_meas_dur(
+        BME68X_FORCED_MODE,
+        &s->conf_cache,
+        &s->dev
+    );
+
+    /* 2) Gas heater duration
+     *
+     * You configured:
+     *   heatr_conf.heatr_dur = 150 ms
+     *
+     * In forced mode, Bosch runs the heater ONCE per measurement.
+     * This time is NOT included in bme68x_get_meas_dur().
+     */
+    uint32_t gas_heater_us = 150000;  // 150 ms → microseconds
+
+    /* 3) Guard time (same idea you already used, but explicit) */
+    uint32_t guard_us = 1000;
+
+    return tph_us + gas_heater_us + guard_us;
+}
+
+/* 3) Try to read results (no waiting). Caller decides when to call this. */
+int8_t bme68x_esp32_try_read_forced(bme68x_esp32_t *s, struct bme68x_data *out)
+{
+    if (!s || !out) return BME68X_E_NULL_PTR;
+
+    uint8_t n_fields = 0;
+    int8_t rslt = bme68x_get_data(BME68X_FORCED_MODE, out, &n_fields, &s->dev);
+    if (rslt != BME68X_OK) return rslt;
+
+    if (n_fields == 0) return BME68X_W_NO_NEW_DATA;
+    return BME68X_OK;
+}

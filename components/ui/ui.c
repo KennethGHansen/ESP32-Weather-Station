@@ -206,8 +206,8 @@ void ui_render_minmax(const ui_layout_t *layout,
     /* ------------------------------------------------------------ */
     /* Confirmation prompt (THIS IS WHAT CHANGES ON BUTTON PRESS)   */
     /* ------------------------------------------------------------ */
-    if (confirm_active) {
-
+    if (confirm_active) 
+    {
         const char *what = "???";
         const char *btn  = "???";
 
@@ -218,17 +218,32 @@ void ui_render_minmax(const ui_layout_t *layout,
             default: break;
         }
 
-        snprintf(buf, sizeof(buf), "Reset %s?", what);
-        st7789h2_draw_string_scaled(x, y, buf, UI_WARN, UI_BG, scale);
+        /* Line 1: "Reset xxx?" — overwrite whole line */
         y += lh;
+        snprintf(buf, sizeof(buf), "Reset %s?", what);
+        ui_draw_printf_padded(
+            x, y, scale,
+            buf, sizeof(buf),
+            28,            // same pad width you already use
+            "%s", buf
+        );
+
+        y += lh;
+
+        /* Line 2: "Press xxx again" — overwrite whole line */
         snprintf(buf, sizeof(buf), "Press %s again", btn);
-        st7789h2_draw_string_scaled(x, y, buf, UI_WARN, UI_BG, scale);
+        ui_draw_printf_padded(
+            x, y, scale,
+            buf, sizeof(buf),
+            28,
+            "%s", buf
+        );
 
     } else {
-
-        /* Clear old confirmation area */
+        /* Clear old confirmation area (unchanged from your code) */
         ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "");
         y += lh;
         ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "");
     }
 }
+    

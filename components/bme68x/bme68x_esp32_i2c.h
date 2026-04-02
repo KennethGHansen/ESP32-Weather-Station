@@ -107,6 +107,9 @@ int8_t bme68x_esp32_configure_default(bme68x_esp32_t *s);
  * @return Bosch status code (BME68X_OK on success)
  */
 int8_t bme68x_esp32_read_forced(bme68x_esp32_t *s, struct bme68x_data *out);
+int8_t bme68x_esp32_trigger_forced(bme68x_esp32_t *s);
+uint32_t bme68x_esp32_forced_duration_us(bme68x_esp32_t *s);
+int8_t bme68x_esp32_try_read_forced(bme68x_esp32_t *s, struct bme68x_data *out);
 
 #ifdef __cplusplus
 }

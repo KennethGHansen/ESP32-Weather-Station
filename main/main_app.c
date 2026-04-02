@@ -46,6 +46,7 @@ static const char *TAG = "main_app";
 
 static ui_screen_t g_last_screen = UI_SCREEN_OVERVIEW;
 static volatile bool g_ui_dirty = true;   // UI redraw request flag
+static TaskHandle_t g_ui_task_handle = NULL;
 
 /* -------------------------------------------------------------------------- */
 /* User configuration section                                                  */
@@ -84,8 +85,7 @@ static volatile bool g_ui_dirty = true;   // UI redraw request flag
 /* -------------------------------------------------------------------------- */
 /* Global objects/state                                                        */
 /* -------------------------------------------------------------------------- */
-
-static bme68x_esp32_t   g_sensor;
+static bme68x_esp32_t  g_sensor;
 static baro_forecast_t g_baro;
 static air_quality_t   g_airq;
 static minmax_stats_t  g_minmax;
@@ -103,12 +103,17 @@ static float               g_last_ambient = 0.0f;
 static air_quality_out_t   g_last_aq;
 
 /**
- * Small critical section lock:
+ * Small critical section lock (Used to aviod crashes between cores):
  * - sensor task updates shared data
  * - UI task reads shared data
  * - button callback updates UI state
  *
  * Critical sections are SHORT and COPY-ONLY.
+ * Short, bounded access to shared state:
+* Importantly:
+* No drawing
+* No sensor I/O
+* No logging inside critical sections
  */
 static portMUX_TYPE g_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -150,19 +155,11 @@ static void do_reset_for_target(ui_confirm_target_t tgt)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Push button callback function                                               */
-/* -------------------------------------------------------------------------- */
-
-
-/* -------------------------------------------------------------------------- */
-/* Push button callback function                                              */
-/* -------------------------------------------------------------------------- */
-/* -------------------------------------------------------------------------- */
 /* Push button callback function                                              */
 /* -------------------------------------------------------------------------- */
 static void pb_callback(pb_button_t btn, void *user)
 {
-    (void)user;
+    (void)user; // Backdoor for private data into function to avoid global clutter
 
     /* ------------------------------------------------------------
      * Debounce ALL buttons
@@ -190,19 +187,18 @@ static void pb_callback(pb_button_t btn, void *user)
                                 UI_ACTION_DOWN;
 
     /* ------------------------------------------------------------
-     * Read confirmation state BEFORE applying action
-     * (This is the key to making "first press shows prompt" reliable)
+     * Capture confirmation state BEFORE applying action
      * ------------------------------------------------------------ */
     bool pre_confirm = false;
+    ui_confirm_target_t pre_target = UI_CONFIRM_NONE;
 
     portENTER_CRITICAL(&g_lock);
     pre_confirm = ui_controller_confirm_active(&g_ui);
+    pre_target  = ui_controller_confirm_target(&g_ui);
     portEXIT_CRITICAL(&g_lock);
 
     /* ------------------------------------------------------------
      * Let controller process the action
-     * Note: handle_action() may return true for multiple reasons,
-     * so we only treat it as "confirm accepted" if pre_confirm was true.
      * ------------------------------------------------------------ */
     bool action_returned_true = false;
 
@@ -212,9 +208,16 @@ static void pb_callback(pb_button_t btn, void *user)
 
     /* ------------------------------------------------------------
      * SECOND press handling:
-     * Only reset if confirmation was already active BEFORE this press.
+     * Only treat as confirmation acceptance if:
+     *  - confirmation was already active BEFORE press
+     *  - AND the same target button was pressed again
      * ------------------------------------------------------------ */
-    if (pre_confirm && action_returned_true) {
+    bool same_target =
+        (pre_target == UI_CONFIRM_TEMP  && act == UI_ACTION_LEFT)  ||
+        (pre_target == UI_CONFIRM_RH    && act == UI_ACTION_RIGHT) ||
+        (pre_target == UI_CONFIRM_PRESS && act == UI_ACTION_DOWN);
+
+    if (pre_confirm && same_target && action_returned_true) {
 
         if (act == UI_ACTION_LEFT) {
             do_reset_for_target(UI_CONFIRM_TEMP);
@@ -224,7 +227,7 @@ static void pb_callback(pb_button_t btn, void *user)
             do_reset_for_target(UI_CONFIRM_PRESS);
         }
 
-        /* Make the text disappear */
+        /* Explicitly cancel confirmation so prompt disappears */
         portENTER_CRITICAL(&g_lock);
         ui_controller_cancel_confirm(&g_ui);
         portEXIT_CRITICAL(&g_lock);
@@ -234,6 +237,12 @@ static void pb_callback(pb_button_t btn, void *user)
      * ALWAYS request a redraw on any button press
      * ------------------------------------------------------------ */
     g_ui_dirty = true;
+    /* Force UI task to run immediately */
+    if (g_ui_task_handle) 
+    {
+        xTaskNotifyGive(g_ui_task_handle);
+    }
+
 }
 
 /* -------------------------------------------------------------------------- */
@@ -246,7 +255,7 @@ static void pb_callback(pb_button_t btn, void *user)
 
 static void ui_task(void *arg)
 {
-    (void)arg;
+    (void)arg;  // Backdoor for for private data into function to avoid global variable clutter
 
     // UI layout shared between screens
     const ui_layout_t layout = {
@@ -258,8 +267,9 @@ static void ui_task(void *arg)
 
     while (1) {
 
-        if (g_ui_dirty) {
-
+        if (g_ui_dirty) 
+        {
+            ulTaskNotifyTake(pdTRUE, 0);
             ui_screen_t screen;
             bool screen_changed = false;
 
@@ -320,68 +330,89 @@ static void ui_task(void *arg)
 /* - Updates models and min/max                                               */
 /* - Signals UI redraw when new data arrives                                  */
 /* -------------------------------------------------------------------------- */
+typedef enum { MEAS_IDLE = 0, MEAS_WAITING } meas_state_t;
 
 static void sensor_task(void *arg)
 {
-    (void)arg;
-
-    int64_t last_cycle_us = 0;
+    (void)arg; // Backdoor for for private data into function to avoid global variable clutter
+ 
+    meas_state_t st = MEAS_IDLE;
+    int64_t next_trigger_us = 0;
+    int64_t ready_at_us = 0;
 
     while (1) {
 
         int64_t now_us = esp_timer_get_time();
 
-        if (last_cycle_us == 0 ||
-            (now_us - last_cycle_us) >= 1000000) {
+        /* 1 Hz cadence for starting a sample */
+        if (next_trigger_us == 0) 
+        {            
+            next_trigger_us = now_us;  /* start immediately at boot */
+        }
 
-            last_cycle_us = now_us;
+        if (st == MEAS_IDLE && now_us >= next_trigger_us)
+        {
+            /* Trigger measurement (fast) */
+            int8_t rslt = bme68x_esp32_trigger_forced(&g_sensor);
 
+            if (rslt == BME68X_OK) 
+            {
+                uint32_t dur_us = bme68x_esp32_forced_duration_us(&g_sensor);
+                ready_at_us = now_us + (int64_t)dur_us;
+                st = MEAS_WAITING;
+            }
+         
+            /* Schedule next trigger in 1 second regardless of readout timing */
+            next_trigger_us += 1000000;
+        }
+
+        if (st == MEAS_WAITING && now_us >= ready_at_us) 
+        {
+            
             struct bme68x_data data;
-            int8_t rslt = bme68x_esp32_read_forced(&g_sensor, &data);
+            int8_t rslt = bme68x_esp32_try_read_forced(&g_sensor, &data);
 
-            if (rslt == BME68X_OK) {
-
-                ESP_LOGI(TAG,
-                         "T=%.2fC RH=%.2f%% P=%.2fPa Gas=%.0fOhm status=0x%02X",
-                         data.temperature,
-                         data.humidity,
-                         data.pressure,
-                         data.gas_resistance,
-                         data.status);
+            if (rslt == BME68X_OK) 
+            {              
+                ESP_LOGI(TAG,"T=%.2fC RH=%.2f%% P=%.2fPa Gas=%.0fOhm status=0x%02X",
+                        data.temperature,
+                        data.humidity,
+                        data.pressure,
+                        data.gas_resistance,
+                        data.status);
 
                 float ambient = data.temperature + BOARD_TEMP_OFFSET_C;
 
                 /* ----------------------------------------------------
-                 * Update models
-                 * ---------------------------------------------------- */
+                * Update models
+                * ---------------------------------------------------- */
                 baro_forecast_update_pa(&g_baro, data.pressure);
                 float slp_hpa = baro_forecast_slp_hpa(&g_baro);
-                air_quality_out_t aq_out =
-                    air_quality_update(&g_airq, data.gas_resistance);
+                air_quality_out_t aq_out = air_quality_update(&g_airq, data.gas_resistance);
 
                 /* ----------------------------------------------------
-                 * Update min/max
-                 * ---------------------------------------------------- */
+                * Update min/max
+                * ---------------------------------------------------- */
                 portENTER_CRITICAL(&g_lock);
-                minmax_update(&g_minmax, ambient,
-                              data.humidity, slp_hpa);
+                minmax_update(&g_minmax, ambient, data.humidity, slp_hpa);
+                g_last_data = data;
+                g_last_ambient = ambient;
+                g_last_aq = aq_out;
+                g_have_last = true;
                 portEXIT_CRITICAL(&g_lock);
 
-                /* ----------------------------------------------------
-                 * Cache last known values for UI
-                 * ---------------------------------------------------- */
-                g_last_data    = data;
-                g_last_ambient = ambient;
-                g_last_aq      = aq_out;
-                g_have_last    = true;
-
-                /* ----------------------------------------------------
-                 * Ask UI task to redraw
-                 * ---------------------------------------------------- */
                 g_ui_dirty = true;
+                
+                /* Done with this cycle */
+                st = MEAS_IDLE;
+            }
+            else
+            {   
+                /* Still not ready; keep waiting but do not block */
+                /* (Optional) push ready_at_us a little forward */
+                ready_at_us = now_us + 2000; /* 2ms retry spacing */
             }
         }
-
         vTaskDelay(1);
     }
 }
@@ -435,6 +466,6 @@ void app_main(void)
     /* --------------------------------------------------------------
      * Start tasks
      * -------------------------------------------------------------- */
-    xTaskCreate(ui_task,     "ui_task",     4096, NULL, 5, NULL);
+    xTaskCreate(ui_task,     "ui_task",     4096, NULL, 5, &g_ui_task_handle);
     xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 4, NULL);
 }
