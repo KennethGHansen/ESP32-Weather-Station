@@ -23,6 +23,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "esp_log.h"
 #include "esp_err.h"
@@ -42,11 +43,20 @@
 #include "minmax_stats.h"
 #include "ui_controller.h"
 
+// Weather sample/queue for WIFI
+#include "wifi_transport.h"
+#include "freertos/semphr.h"
+#include "weather_sample.h"
+#include "weather_queue.h"
+static weather_queue_t weather_q;
+static SemaphoreHandle_t weather_q_mutex;
+
 static const char *TAG = "main_app";
 
 static ui_screen_t g_last_screen = UI_SCREEN_OVERVIEW;
 static volatile bool g_ui_dirty = true;   // UI redraw request flag
 static TaskHandle_t g_ui_task_handle = NULL;
+
 
 /* -------------------------------------------------------------------------- */
 /* User configuration section                                                  */
@@ -380,8 +390,30 @@ static void sensor_task(void *arg)
                         data.pressure,
                         data.gas_resistance,
                         data.status);
-
+                // Static offset of measured temperature
                 float ambient = data.temperature + BOARD_TEMP_OFFSET_C;
+                
+                /* ----------------------------------------------------
+                * Update buffer for WIFI transfer (ring buffer ensures no blocking)
+                * ---------------------------------------------------- */
+                // Struct for WIFI data
+                weather_sample_t s = {0};
+                s.ts = 0;                           // fill later when you wire in NTP here
+                s.temp_c_cal = ambient;             // calibrated temperature
+                s.rh_percent_raw = data.humidity;   // raw humidity
+                s.pressure_pa_raw = data.pressure;  // raw pressure if you have it here, else 0
+                s.flags = 0;
+                
+                ESP_LOGI("QUEUE", "pushed sample: T=%.2f RH=%.2f P=%.2f",
+                s.temp_c_cal, s.rh_percent_raw, s.pressure_pa_raw);
+
+
+                /* Push into queue (never blocks) */
+                if (xSemaphoreTake(weather_q_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    weather_queue_push(&weather_q, &s);
+                    xSemaphoreGive(weather_q_mutex);
+                }
+
 
                 /* ----------------------------------------------------
                 * Update models
@@ -425,6 +457,10 @@ void app_main(void)
 {
     ESP_ERROR_CHECK(st7789h2_init(&cfg_disp));
     st7789h2_fill(0x0000);
+    weather_queue_init(&weather_q);                     // 1. init ring buffer
+    weather_q_mutex = xSemaphoreCreateMutex();          // 2. create mutex
+    
+
 
     ESP_ERROR_CHECK(bme68x_esp32_init_i2c(&g_sensor,
                                          I2C_PORT,
@@ -468,4 +504,6 @@ void app_main(void)
      * -------------------------------------------------------------- */
     xTaskCreate(ui_task,     "ui_task",     4096, NULL, 5, &g_ui_task_handle);
     xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 4, NULL);
+    
+    wifi_transport_start(&weather_q, weather_q_mutex); // 3. start consumer
 }
