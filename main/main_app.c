@@ -43,6 +43,15 @@
 #include "minmax_stats.h"
 #include "ui_controller.h"
 
+// WIFI includes
+#include "esp_netif.h"
+#include "esp_event.h"
+#include "esp_wifi.h"
+#include "nvs_flash.h"
+
+// Real time stamp
+#include "esp_sntp.h"
+
 // Weather sample/queue for WIFI
 #include "wifi_transport.h"
 #include "freertos/semphr.h"
@@ -127,8 +136,65 @@ static air_quality_out_t   g_last_aq;
  */
 static portMUX_TYPE g_lock = portMUX_INITIALIZER_UNLOCKED;
 
+
 /* -------------------------------------------------------------------------- */
-/* Display config (your existing working config)                               */
+/* Real time for timestamp init                                               */
+/* -------------------------------------------------------------------------- */
+static void init_time(void)
+{
+    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    sntp_setservername(0, "pool.ntp.org");
+    sntp_init();
+}
+
+/* -------------------------------------------------------------------------- */
+/* WIFI initialization                                                        */
+/* -------------------------------------------------------------------------- */
+static void wifi_init_sta(void)
+{
+    ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = CONFIG_WIFI_SSID,
+            .password = CONFIG_WIFI_PASSWORD,
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+            },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_connect());
+}
+
+/* -------------------------------------------------------------------------- */
+/* WIFI event handler (only send data when WIFI is connected)                 */
+/* -------------------------------------------------------------------------- */
+static void on_got_ip(void *arg,
+                      esp_event_base_t base,
+                      int32_t id,
+                      void *data)
+{
+    void init_time(); //  Start real timer for timestamp
+    static bool started = false;
+
+    if (started) {
+        return;
+    }
+
+    started = true;
+    wifi_transport_start(&weather_q, weather_q_mutex);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Display config (your existing working config)                              */
 /* -------------------------------------------------------------------------- */
 
 static st7789h2_config_t cfg_disp = {
@@ -398,7 +464,7 @@ static void sensor_task(void *arg)
                 * ---------------------------------------------------- */
                 // Struct for WIFI data
                 weather_sample_t s = {0};
-                s.ts = 0;                           // fill later when you wire in NTP here
+                s.ts = (uint32_t)time(NULL);                        // Real time
                 s.temp_c_cal = ambient;             // calibrated temperature
                 s.rh_percent_raw = data.humidity;   // raw humidity
                 s.pressure_pa_raw = data.pressure;  // raw pressure if you have it here, else 0
@@ -452,16 +518,42 @@ static void sensor_task(void *arg)
 /* -------------------------------------------------------------------------- */
 /* app_main: init everything and start tasks                                   */
 /* -------------------------------------------------------------------------- */
-
 void app_main(void)
 {
+    /* --------------------------------------------------------------
+     * Display init
+     * -------------------------------------------------------------- */
     ESP_ERROR_CHECK(st7789h2_init(&cfg_disp));
     st7789h2_fill(0x0000);
-    weather_queue_init(&weather_q);                     // 1. init ring buffer
-    weather_q_mutex = xSemaphoreCreateMutex();          // 2. create mutex
-    
+
+    /* --------------------------------------------------------------
+     * Weather queue + mutex (used by sensor + transport)
+     * -------------------------------------------------------------- */
+    weather_queue_init(&weather_q);
+    weather_q_mutex = xSemaphoreCreateMutex();
+  
 
 
+    /* Bring up Wi‑Fi (STA mode, async connect) */
+    wifi_init_sta();
+
+
+    /* --------------------------------------------------------------
+    * Wi‑Fi: register IP event handler BEFORE starting Wi‑Fi
+    * Transport task will be started from on_got_ip()
+    * -------------------------------------------------------------- */
+    ESP_ERROR_CHECK(
+        esp_event_handler_register(
+            IP_EVENT,
+            IP_EVENT_STA_GOT_IP,
+            &on_got_ip,
+            NULL
+        )
+    );
+
+    /* --------------------------------------------------------------
+     * Sensor + model init
+     * -------------------------------------------------------------- */
     ESP_ERROR_CHECK(bme68x_esp32_init_i2c(&g_sensor,
                                          I2C_PORT,
                                          I2C_SDA_GPIO,
@@ -485,9 +577,15 @@ void app_main(void)
     };
     air_quality_init(&g_airq, &aq_cfg);
 
+    /* --------------------------------------------------------------
+     * UI / state init
+     * -------------------------------------------------------------- */
     minmax_init(&g_minmax);
     ui_controller_init(&g_ui);
 
+    /* --------------------------------------------------------------
+     * Buttons
+     * -------------------------------------------------------------- */
     pb_config_t pb_cfg = {
         .pin_up    = JOY_UP_GPIO,
         .pin_left  = JOY_LEFT_GPIO,
@@ -500,10 +598,8 @@ void app_main(void)
     ESP_ERROR_CHECK(pushbuttons_start_task(&g_pb, "btn_task", 4096, 6));
 
     /* --------------------------------------------------------------
-     * Start tasks
+     * Start application tasks
      * -------------------------------------------------------------- */
     xTaskCreate(ui_task,     "ui_task",     4096, NULL, 5, &g_ui_task_handle);
     xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 4, NULL);
-    
-    wifi_transport_start(&weather_q, weather_q_mutex); // 3. start consumer
 }

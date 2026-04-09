@@ -159,9 +159,7 @@ static void wifi_transport_task(void *arg)
     bool have_pending = false;
     
     
-    while (1) {
-        ESP_LOGI("MON_NET", "transport task alive");
-        
+    while (1) {      
         /* Ensure Wi‑Fi is usable */
         if (!wifi_is_connected()) {
             wifi_reconnect_hint();
@@ -192,11 +190,14 @@ static void wifi_transport_task(void *arg)
         /* Try sending pending sample */
         if (post_sample(&pending)) {
             ESP_LOGI("MON_NET", "sample sent successfully");
-            have_pending = false;  // success → fetch next
-            vTaskDelay(pdMS_TO_TICKS(200));
-        } else {
-            ESP_LOGW(TAG, "POST failed, retrying same sample");
-            vTaskDelay(pdMS_TO_TICKS(1500));
+            have_pending = false;
+
+            /* If queue is now empty, back off */
+            if (weather_queue_count(g_queue) == 0) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(200));
+            }
         }
     }
 }
