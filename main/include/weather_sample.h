@@ -18,4 +18,7 @@ typedef struct
 
     // Optional: quick health/status bitfield (0 = OK)
     uint32_t flags;
+    // boot_id identifies which power-on session produced this sample.
+    // It increments every reboot (persistent in NVS).
+    uint32_t boot_id;
 } weather_sample_t;

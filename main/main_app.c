@@ -47,9 +47,11 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "esp_wifi.h"
-#include "nvs_flash.h"
+#include "nvs.h"        // For reboot counter
+#include "nvs_flash.h"  // For reboot counter
 
-// Real time stamp
+// Real time stamp SNTP
+#include <time.h>
 #include "esp_sntp.h"
 
 // Weather sample/queue for WIFI
@@ -59,18 +61,22 @@
 #include "weather_queue.h"
 static weather_queue_t weather_q;
 static SemaphoreHandle_t weather_q_mutex;
+static volatile bool g_time_valid = false;  // Used for SNTP sync
 
 static const char *TAG = "main_app";
 
+// Graphics display parameters
 static ui_screen_t g_last_screen = UI_SCREEN_OVERVIEW;
 static volatile bool g_ui_dirty = true;   // UI redraw request flag
 static TaskHandle_t g_ui_task_handle = NULL;
 
+// Persistent reboot counter (increments every time the ESP boots).
+// Stored in NVS so it survives reset + power cycle.
+static uint32_t g_boot_id = 0;
 
 /* -------------------------------------------------------------------------- */
 /* User configuration section                                                  */
 /* -------------------------------------------------------------------------- */
-
 /**
  * Font details external font file
  * UI module may also define its own
@@ -138,13 +144,105 @@ static portMUX_TYPE g_lock = portMUX_INITIALIZER_UNLOCKED;
 
 
 /* -------------------------------------------------------------------------- */
-/* Real time for timestamp init                                               */
+/* Real time for timestamp init - SNTP                                             */
 /* -------------------------------------------------------------------------- */
-static void init_time(void)
+static void sntp_init_time(void)
 {
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, "pool.ntp.org");
-    sntp_init();
+    // Use polling mode (standard)
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+
+    // Set NTP server (pool is fine for now)
+    esp_sntp_setservername(0, "pool.ntp.org");
+
+    // Start SNTP
+    esp_sntp_init();
+}
+static bool esp_time_has_synced(void)
+{
+    time_t now = 0;
+    time(&now);
+
+    // Any value reasonably after Jan 1 2020 = "real time"
+    return now > 1600000000;
+}
+static void time_sync_task(void *arg)
+{
+    while (!g_time_valid) {
+        if (esp_time_has_synced()) {
+            g_time_valid = true;
+            ESP_LOGI(TAG, "System time synchronized");
+            vTaskDelete(NULL);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* SNTP sync helper function                                                  */
+/* -------------------------------------------------------------------------- */
+static inline bool esp_time_is_valid(void)
+{
+    return g_time_valid;
+}
+
+/*
+ * boot_id_init()
+ *
+ * Purpose:
+ * - Maintain a persistent boot counter across resets and power cycles.
+ *
+ * Storage:
+ * - Uses ESP-IDF NVS (key/value store in flash) which is intended for small values. [1](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/storage/nvs_flash.html)
+ *
+ * Behavior:
+ * - Open namespace "system"
+ * - Read key "boot_id" (uint32)
+ * - If missing, treat as 0
+ * - Increment
+ * - Write back + commit
+ * - Store result in g_boot_id for fast access while running
+ *
+ * Notes:
+ * - This function must be called once during boot, after NVS is initialized.
+ * - NVS writes are wear-levelled, and this is one write per boot, which is fine for typical use. [1](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/storage/nvs_flash.html)
+ */
+static void boot_id_init(void)
+{
+    nvs_handle_t nvs = 0;
+
+    // Open (or create) namespace "system" in read/write mode
+    esp_err_t err = nvs_open("system", NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        // If NVS isn't ready, leave boot_id as 0 (still allows program to run)
+        g_boot_id = 0;
+        return;
+    }
+
+    // Read previous boot_id value (if it exists)
+    uint32_t boot_id = 0;
+    err = nvs_get_u32(nvs, "boot_id", &boot_id);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        // Key doesn't exist yet (first run after erase/flash)
+        boot_id = 0;
+    } else if (err != ESP_OK) {
+        // Any other error: fall back to 0
+        boot_id = 0;
+    }
+
+    // Increment on every boot
+    boot_id++;
+
+    // Save to global so other code can attach it to samples
+    g_boot_id = boot_id;
+
+    // Persist the updated value back to flash
+    (void)nvs_set_u32(nvs, "boot_id", boot_id);
+
+    // Commit is required to ensure the write is stored
+    (void)nvs_commit(nvs);
+
+    // Always close handle
+    nvs_close(nvs);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -154,7 +252,6 @@ static void wifi_init_sta(void)
 {
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -182,15 +279,16 @@ static void on_got_ip(void *arg,
                       int32_t id,
                       void *data)
 {
-    void init_time(); //  Start real timer for timestamp
-    static bool started = false;
-
-    if (started) {
-        return;
+    static bool transport_started = false;
+    static bool time_started = false;
+    
+    // Start SNTP exactly once
+    if (!time_started) {
+        sntp_init_time();
+        xTaskCreate(time_sync_task, "time_sync", 2048, NULL, 3, NULL);
+        time_started = true;
     }
 
-    started = true;
-    wifi_transport_start(&weather_q, weather_q_mutex);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -463,12 +561,17 @@ static void sensor_task(void *arg)
                 * Update buffer for WIFI transfer (ring buffer ensures no blocking)
                 * ---------------------------------------------------- */
                 // Struct for WIFI data
-                weather_sample_t s = {0};
-                s.ts = (uint32_t)time(NULL);                        // Real time
+                weather_sample_t s = {0};          
+                if (esp_time_is_valid()) {
+                    s.ts = (uint32_t)time(NULL);   // real wall‑clock time (seconds)
+                } else {
+                    s.ts = 0;                      // explicitly “unknown / not synced”
+                }
                 s.temp_c_cal = ambient;             // calibrated temperature
                 s.rh_percent_raw = data.humidity;   // raw humidity
                 s.pressure_pa_raw = data.pressure;  // raw pressure if you have it here, else 0
                 s.flags = 0;
+                s.boot_id = g_boot_id;              // attach persistent reboot/session id to every sample
                 
                 ESP_LOGI("QUEUE", "pushed sample: T=%.2f RH=%.2f P=%.2f",
                 s.temp_c_cal, s.rh_percent_raw, s.pressure_pa_raw);
@@ -532,16 +635,25 @@ void app_main(void)
     weather_queue_init(&weather_q);
     weather_q_mutex = xSemaphoreCreateMutex();
   
-
-
-    /* Bring up Wi‑Fi (STA mode, async connect) */
-    wifi_init_sta();
-
-
     /* --------------------------------------------------------------
     * Wi‑Fi: register IP event handler BEFORE starting Wi‑Fi
     * Transport task will be started from on_got_ip()
     * -------------------------------------------------------------- */
+   /* START TRANSPORT UNCONDITIONALLY ONCE */
+    wifi_transport_start(&weather_q, weather_q_mutex);
+    
+    // Create default event loop ONCE, globally
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    ESP_ERROR_CHECK(
+        esp_event_handler_register(
+            WIFI_EVENT,
+            WIFI_EVENT_STA_CONNECTED,
+            &on_got_ip,
+            NULL
+        )
+    );
+
     ESP_ERROR_CHECK(
         esp_event_handler_register(
             IP_EVENT,
@@ -550,6 +662,12 @@ void app_main(void)
             NULL
         )
     );
+
+    /* Bring up Wi‑Fi (STA mode, async connect) */
+    wifi_init_sta();
+
+    /* Boot id for reboot counter */
+    boot_id_init();
 
     /* --------------------------------------------------------------
      * Sensor + model init

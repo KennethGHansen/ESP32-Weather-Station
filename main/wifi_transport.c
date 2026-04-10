@@ -16,7 +16,7 @@
  *
  * Failure behavior:
  * -----------------
- * - Wi‑Fi down        -> retry later, data stays buffered
+ * - Wi‑Fi down       -> retry later, data stays buffered
  * - HTTP failure     -> retry same sample
  * - Server down      -> retry indefinitely
  * - Queue empty      -> sleep
@@ -35,6 +35,7 @@
 
 #define POST_URL "http://192.168.111.5:8001/weather"
 static const char *TAG = "wifi_transport";
+
 
 /* --------------------------------------------------------------------------
  * References supplied by main_app.c
@@ -108,6 +109,7 @@ static bool post_sample(const weather_sample_t *s)
         "{"
         "\"ts\":%lu,"
         "\"device_id\":\"%s\","
+        "\"boot_id\":%lu,"
         "\"temp\":%.2f,"
         "\"hum\":%.2f,"
         "\"pressure\":%.2f,"
@@ -115,12 +117,12 @@ static bool post_sample(const weather_sample_t *s)
         "}",
         (unsigned long)ts,
         device_id,
+        (unsigned long)s->boot_id,
         (double)s->temp_c_cal,
         (double)s->rh_percent_raw,
         (double)s->pressure_pa_raw,
         (unsigned long)s->flags
     );
-
 
     esp_http_client_config_t cfg = {
         .url = POST_URL,
@@ -158,14 +160,14 @@ static void wifi_transport_task(void *arg)
     weather_sample_t pending;
     bool have_pending = false;
     
-    
     while (1) {      
         /* Ensure Wi‑Fi is usable */
         if (!wifi_is_connected()) {
             wifi_reconnect_hint();
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
         }
+
 
         /* Obtain next sample if none pending */
         if (!have_pending) {
