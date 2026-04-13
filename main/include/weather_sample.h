@@ -15,6 +15,11 @@ typedef struct
     float temp_c_cal;         // calibrated temperature (C)
     float rh_percent_raw;     // raw relative humidity (%)
     float pressure_pa_raw;    // raw pressure (Pa) or set to 0 if not available here
+    float gas_resistance_ohm; // raw gas measurements
+    float   slp_pa;           // derived: sea-level pressure in Pa
+    float   aq_ratio;         // derived: air quality ratio (baseline/current)
+    bool    aq_ready;         // derived: air quality warmup finished
+    const char *aq_text;      // derived: text signifying air quality
 
     // Optional: quick health/status bitfield (0 = OK)
     uint32_t flags;

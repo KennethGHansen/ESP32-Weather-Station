@@ -558,6 +558,26 @@ static void sensor_task(void *arg)
                 float ambient = data.temperature + BOARD_TEMP_OFFSET_C;
                 
                 /* ----------------------------------------------------
+                * Update models
+                * ---------------------------------------------------- */
+                baro_forecast_update_pa(&g_baro, data.pressure);
+                float slp_hpa = baro_forecast_slp_hpa(&g_baro);
+                air_quality_out_t aq_out = air_quality_update(&g_airq, data.gas_resistance);
+                
+                /* ----------------------------------------------------
+                * Update min/max
+                * ---------------------------------------------------- */
+                portENTER_CRITICAL(&g_lock);
+                minmax_update(&g_minmax, ambient, data.humidity, slp_hpa);
+                g_last_data = data;
+                g_last_ambient = ambient;
+                g_last_aq = aq_out;
+                g_have_last = true;
+                portEXIT_CRITICAL(&g_lock);
+
+                g_ui_dirty = true;
+                
+                /* ----------------------------------------------------
                 * Update buffer for WIFI transfer (ring buffer ensures no blocking)
                 * ---------------------------------------------------- */
                 // Struct for WIFI data
@@ -570,6 +590,12 @@ static void sensor_task(void *arg)
                 s.temp_c_cal = ambient;             // calibrated temperature
                 s.rh_percent_raw = data.humidity;   // raw humidity
                 s.pressure_pa_raw = data.pressure;  // raw pressure if you have it here, else 0
+                s.gas_resistance_ohm = data.gas_resistance; // raw gas measurements            
+                s.slp_pa  = slp_hpa * 100.0f;       // hPa -> Pa      
+                s.aq_ratio = aq_out.ratio;          // air quaility ratio
+                s.aq_ready = aq_out.ready;          // ready indicatior
+                s.aq_text = aq_out.text;
+
                 s.flags = 0;
                 s.boot_id = g_boot_id;              // attach persistent reboot/session id to every sample
                 
@@ -584,26 +610,6 @@ static void sensor_task(void *arg)
                 }
 
 
-                /* ----------------------------------------------------
-                * Update models
-                * ---------------------------------------------------- */
-                baro_forecast_update_pa(&g_baro, data.pressure);
-                float slp_hpa = baro_forecast_slp_hpa(&g_baro);
-                air_quality_out_t aq_out = air_quality_update(&g_airq, data.gas_resistance);
-
-                /* ----------------------------------------------------
-                * Update min/max
-                * ---------------------------------------------------- */
-                portENTER_CRITICAL(&g_lock);
-                minmax_update(&g_minmax, ambient, data.humidity, slp_hpa);
-                g_last_data = data;
-                g_last_ambient = ambient;
-                g_last_aq = aq_out;
-                g_have_last = true;
-                portEXIT_CRITICAL(&g_lock);
-
-                g_ui_dirty = true;
-                
                 /* Done with this cycle */
                 st = MEAS_IDLE;
             }

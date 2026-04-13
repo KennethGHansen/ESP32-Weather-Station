@@ -73,12 +73,135 @@ class Handler(BaseHTTPRequestHandler):
             f.write(json.dumps(entry) + "\n")
 
         return self._send_json({"ok": True})
-
+      
     # --------------------------------------------------------
     # GET handlers
     # --------------------------------------------------------
     def do_GET(self):
+        
+        # --------------------
+        # GET /boots
+        # --------------------
+        if self.path.startswith("/boots"):
+            entries = []
+            try:
+                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        entries.append(json.loads(line))
+            except FileNotFoundError:
+                return self._send_json({"error": "no data yet"}, 404)
 
+            if not entries:
+                return self._send_json({"boots": []})
+
+            EXPECTED_INTERVAL = 10
+
+            boots = {}
+            for e in entries:
+                boot = e.get("boot_id")
+                if boot is None:
+                    continue
+
+                ts = e.get("ts")
+                if ts is None:
+                    continue
+
+                if boot not in boots:
+                    boots[boot] = {
+                        "boot_id": boot,
+                        "start_ts": ts,
+                        "end_ts": ts,
+                        "sample_count": 1,
+                    }
+                else:
+                    boots[boot]["end_ts"] = ts
+                    boots[boot]["sample_count"] += 1
+
+            boot_list = []
+            for b in boots.values():
+                duration = b["end_ts"] - b["start_ts"]
+                expected = duration / EXPECTED_INTERVAL if duration > 0 else 0
+                uptime_ratio = (
+                    b["sample_count"] / expected if expected > 0 else 0
+                )
+
+                boot_list.append({
+                    "boot_id": b["boot_id"],
+                    "start_ts": b["start_ts"],
+                    "end_ts": b["end_ts"],
+                    "duration_seconds": round(duration, 1),
+                    "sample_count": b["sample_count"],
+                    "uptime_ratio": round(uptime_ratio, 4),
+                })
+
+            # Sort newest boot first
+            boot_list.sort(key=lambda b: b["start_ts"], reverse=True)
+
+            return self._send_json({
+                "boots": boot_list
+            })        
+        
+        # --------------------
+        # GET /status
+        # --------------------
+        if self.path.startswith("/status"):
+            entries = []
+            try:
+                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        entries.append(json.loads(line))
+            except FileNotFoundError:
+                return self._send_json({"error": "no data yet"}, 404)
+
+            if not entries:
+                return self._send_json({"error": "no data yet"}, 404)
+
+            # Determine the current (latest) boot_id
+            current_boot = entries[-1].get("boot_id")
+            if current_boot is None:
+                return self._send_json({"error": "current boot unknown"}, 400)
+
+            # Filter entries for the current boot
+            boot_entries = [
+                e for e in entries
+                if e.get("boot_id") == current_boot and e.get("ts") is not None
+            ]
+
+            if len(boot_entries) < 2:
+                return self._send_json({"error": "not enough data for current boot"}, 400)
+
+            EXPECTED_INTERVAL = 10
+
+            start_ts = boot_entries[0]["ts"]
+            end_ts = boot_entries[-1]["ts"]
+            duration = end_ts - start_ts
+            sample_count = len(boot_entries)
+
+            expected_samples = duration / EXPECTED_INTERVAL if duration > 0 else 0
+            uptime_ratio = (
+                sample_count / expected_samples if expected_samples > 0 else 0
+            )
+
+            # Simple, explicit health classification
+            if uptime_ratio >= 0.98:
+                state = "ok"
+                note = "Data flow is stable"
+            elif uptime_ratio >= 0.9:
+                state = "degraded"
+                note = "Minor data loss detected"
+            else:
+                state = "bad"
+                note = "Significant data loss detected"
+
+            return self._send_json({
+                "state": state,
+                "note": note,
+                "boot_id": current_boot,
+                "uptime_seconds": round(duration, 1),
+                "sample_count": sample_count,
+                "uptime_ratio": round(uptime_ratio, 4),
+            })
+        
         # --------------------
         # GET /weather
         # --------------------
@@ -148,7 +271,7 @@ class Handler(BaseHTTPRequestHandler):
                 "reboot_count": reboot_count,
                 "uptime_ratio": round(uptime_ratio, 4),
             })
-
+             
         # --------------------
         # GET /
         # --------------------
@@ -171,9 +294,13 @@ class Handler(BaseHTTPRequestHandler):
 
 <h3>Reliability metrics</h3>
 <pre id="metrics">waiting...</pre>
+<h3>Current status</h3>
+<pre id="status">waiting...</pre>
 
 <h3>Temperature history</h3>
 <canvas id="chart" width="900" height="320"></canvas>
+<h3>Derived values</h3>
+<pre id="derived">waiting...</pre>
 
 <script>
 let chart = null;
@@ -191,6 +318,25 @@ async function update() {
     document.getElementById('metrics').textContent =
       JSON.stringify(await rM.json(), null, 2);
   }
+  
+  const rS = await fetch('/status?nocache=' + Date.now());
+if (rS.ok) {
+  document.getElementById('status').textContent =
+    JSON.stringify(await rS.json(), null, 2);
+}
+
+  // Show derived values if present (schema-aware, safe)
+  const rW = await fetch('/weather?nocache=' + Date.now());
+  if (rW.ok) {
+    const w = await rW.json();
+    if (w.weather?.derived) {
+      document.getElementById('derived').textContent =
+        JSON.stringify(w.weather.derived, null, 2);
+    } else {
+      document.getElementById('derived').textContent =
+        "no derived data received yet";
+    }
+  }
 
   const r2 = await fetch('/history?nocache=' + Date.now());
   if (!r2.ok) return;
@@ -198,10 +344,23 @@ async function update() {
   const hist = await r2.json();
   if (!hist.length) return;
 
-  const points = hist.map(e => ({
-    x: e.ts * 1000,
-    y: e.weather.temp
-  }));
+    const points = hist.map(e => {
+      let temp = null;
+
+      // New schema (preferred)
+      if (e.weather?.raw?.temperature_c !== undefined) {
+        temp = e.weather.raw.temperature_c;
+      }
+      // Legacy fallback
+      else if (e.weather?.temp !== undefined) {
+        temp = e.weather.temp;
+      }
+
+      return {
+        x: e.ts * 1000,
+        y: temp
+      };
+    }).filter(p => p.y !== null);
 
   if (!chart) {
     chart = new Chart(document.getElementById('chart'), {
