@@ -106,9 +106,10 @@ static bool post_sample(const weather_sample_t *s)
     char json[768];
     
 
-int n = snprintf(json, sizeof(json),
+int n = snprintf(json, sizeof(json),  //JSON generation
     "{"
     "\"ts\":%lu,"
+    "\"schema_version\":1,"         // This version sends all possible data to web server
     "\"device_id\":\"%s\","
     "\"boot_id\":%lu,"
     "\"temp\":%.2f,"
