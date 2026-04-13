@@ -594,8 +594,17 @@ static void sensor_task(void *arg)
                 s.slp_pa  = slp_hpa * 100.0f;       // hPa -> Pa      
                 s.aq_ratio = aq_out.ratio;          // air quaility ratio
                 s.aq_ready = aq_out.ready;          // ready indicatior
-                s.aq_text = aq_out.text;
-
+                s.aq_text = aq_out.text;            // air quality text 
+                s.baro_forecast_text = baro_forecast_text(&g_baro);                         // barometer forecast
+                s.baro_trend_text = baro_trend_str(baro_forecast_trend(&g_baro));           // barometer trend text
+                s.baro_storm_text = storm_level_str(baro_forecast_storm_level(&g_baro));    // barometer alert text       
+                s.temp_min_c  = g_minmax.temp_min_c;
+                s.temp_max_c  = g_minmax.temp_max_c;
+                s.rh_min_pct  = g_minmax.rh_min;
+                s.rh_max_pct  = g_minmax.rh_max;
+                s.press_min_pa = g_minmax.press_min_hpa;
+                s.press_max_pa = g_minmax.press_max_hpa;
+ 
                 s.flags = 0;
                 s.boot_id = g_boot_id;              // attach persistent reboot/session id to every sample
                 

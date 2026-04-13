@@ -105,47 +105,69 @@ static bool post_sample(const weather_sample_t *s)
 
     char json[768];
     
-    int n = snprintf(json, sizeof(json),
+
+int n = snprintf(json, sizeof(json),
     "{"
-      "\"ts\":%lu,"
-      "\"device_id\":\"%s\","
-      "\"boot_id\":%lu,"
-      "\"temp\":%.2f,"
-      "\"hum\":%.2f,"
-      "\"pressure\":%.2f,"
-      "\"flags\":%lu,"
-      "\"raw\":{"
+    "\"ts\":%lu,"
+    "\"device_id\":\"%s\","
+    "\"boot_id\":%lu,"
+    "\"temp\":%.2f,"
+    "\"hum\":%.2f,"
+    "\"pressure\":%.2f,"
+    "\"flags\":%lu,"
+    "\"raw\":{"
         "\"temperature_c\":%.2f,"
         "\"pressure_pa\":%.2f,"
         "\"gas_resistance_ohm\":%.2f"
-      "},"
-      "\"derived\":{"
+    "},"
+    "\"derived\":{"
         "\"sea_level_pressure_pa\":%.2f,"
         "\"air_quality_ratio\":%.4f,"
         "\"air_quality_ready\":%s,"
-        "\"air_quality_text\":\"%s\""
-      "}"
-    "}",
-    (unsigned long)ts,                 // %lu
-    device_id,                         // %s
-    (unsigned long)s->boot_id,         // %lu
-    (double)s->temp_c_cal,             // %.2f
-    (double)s->rh_percent_raw,         // %.2f
-    (double)s->pressure_pa_raw,        // %.2f
-    (unsigned long)s->flags,           // %lu
-    (double)s->temp_c_cal,             // %.2f
-    (double)s->pressure_pa_raw,        // %.2f
-    (double)s->gas_resistance_ohm,     // %.2f
-    (double)s->slp_pa,                 // %.2f
-    (double)s->aq_ratio,               // %.4f
-    s->aq_ready ? "true" : "false",    // %s
-    s->aq_text ? s->aq_text : ""       // %s
+        "\"air_quality_text\":\"%s\","
+        "\"barometer_forecast\":\"%s\","
+        "\"barometer_trend\":\"%s\","
+        "\"barometer_storm\":\"%s\","
+        "\"minmax\":{"
+            "\"temp_min_c\":%.2f,"
+            "\"temp_max_c\":%.2f,"
+            "\"rh_min_pct\":%.2f,"
+            "\"rh_max_pct\":%.2f,"
+            "\"press_min_pa\":%.2f,"
+            "\"press_max_pa\":%.2f"
+        "}"
+    "}"
+    "}",  
+    (unsigned long)ts,
+    device_id,
+    (unsigned long)s->boot_id,
+    (double)s->temp_c_cal,
+    (double)s->rh_percent_raw,
+    (double)s->pressure_pa_raw,
+    (unsigned long)s->flags,
+    (double)s->temp_c_cal,
+    (double)s->pressure_pa_raw,
+    (double)s->gas_resistance_ohm,
+    (double)s->slp_pa,
+    (double)s->aq_ratio,
+    s->aq_ready ? "true" : "false",
+    s->aq_text ? s->aq_text : "",
+    s->baro_forecast_text ? s->baro_forecast_text : "",
+    s->baro_trend_text ? s->baro_trend_text : "",
+    s->baro_storm_text ? s->baro_storm_text : "",
+    (double)s->temp_min_c,
+    (double)s->temp_max_c,
+    (double)s->rh_min_pct,
+    (double)s->rh_max_pct,
+    (double)s->press_min_pa,
+    (double)s->press_max_pa
 );
 
 if (n < 0 || n >= (int)sizeof(json)) {
     ESP_LOGE(TAG, "JSON snprintf failed/truncated (n=%d)", n);
     return false;
 }
+
 
     esp_http_client_config_t cfg = {
         .url = POST_URL,
