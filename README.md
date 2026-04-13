@@ -23,7 +23,7 @@ More to come!
 ---
 
 ## Working revision
-v0.3 - ESP32 RTOS task management structure running
+v0.6 - ESP32 WIFI working on local server
 
 ---
 
