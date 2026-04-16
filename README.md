@@ -8,13 +8,18 @@ This project will build on from my ESP32_SEN-BME680 repository and i will add ad
 For more details concering the the first running code using a ESP32-S3 in cunjunction with the Bosch SEN-BME680 board
 Please see my repository ESP32_SEN-BME680.
 
+@ version 0.7 I have implemented the JSON interface from ESP32 to the remote site where data is now updated. 
+Further work will happen on the frontend via my repo: Weather-Station-Frontend
+For practical reasons i am not using GitHubs internal deployment (Github Pages) anymore, but Cloudflare, so this 
+repo will only serve as a backup platform.
+
 ---
 
 ## TODO list
 - [X] Add display
 - [X] Add ESP32 RTOS task management
 - [X] Add push button
-- [ ] Add WiFi
+- [X] Add WiFi
 - [ ] Add proximity activation
 - [ ] Power optimation
 
@@ -23,7 +28,7 @@ More to come!
 ---
 
 ## Working revision
-v0.3 - ESP32 RTOS task management structure running
+v0.7 - ESP32 Weather station running with public access on: https://weather-station.kghansen123.workers.dev/
 
 ---
 
