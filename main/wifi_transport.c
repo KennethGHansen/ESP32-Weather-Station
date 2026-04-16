@@ -23,6 +23,7 @@
  */
 
 #include "wifi_transport.h"
+#include "esp_crt_bundle.h"
 
 #include <string.h>
 #include <time.h>
@@ -33,7 +34,7 @@
 #include "esp_mac.h"
 #include "esp_log.h"
 
-#define POST_URL "http://192.168.111.5:8001/weather"
+#define POST_URL "https://weather-station.kghansen123.workers.dev/api/weather"
 static const char *TAG = "wifi_transport";
 
 
@@ -103,12 +104,30 @@ static bool post_sample(const weather_sample_t *s)
     get_device_id(device_id);
     uint32_t ts = (s->ts != 0) ? s->ts : get_unix_time_sec();
 
-    char json[768];
     
+    /*char json[256];     // JSON generation (Small test package - Not used in real code)
+      int n = snprintf(
+        json,
+        sizeof(json),
+        "{"
+        "\"device_id\":\"%s\","
+        "\"boot_id\":%lu,"
+        "\"ts\":%lu,"
+        "\"raw\":{"
+            "\"temperature_c\":%.2f"
+        "}"
+        "}",
+        device_id,
+        (unsigned long)s->boot_id,
+        (unsigned long)ts,
+        (double)s->temp_c_cal
+    );*/
 
-int n = snprintf(json, sizeof(json),
+    char json[768];//JSON generation (FULL) This version sends all possible data to the web server
+    int n = snprintf(json, sizeof(json),  
     "{"
     "\"ts\":%lu,"
+    "\"schema_version\":1,"         
     "\"device_id\":\"%s\","
     "\"boot_id\":%lu,"
     "\"temp\":%.2f,"
@@ -172,6 +191,7 @@ if (n < 0 || n >= (int)sizeof(json)) {
     esp_http_client_config_t cfg = {
         .url = POST_URL,
         .timeout_ms = 15000,
+        .crt_bundle_attach = esp_crt_bundle_attach
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -180,14 +200,25 @@ if (n < 0 || n >= (int)sizeof(json)) {
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_post_field(client, json, strlen(json));
 
+
     esp_err_t err = esp_http_client_perform(client);
-    int status = (err == ESP_OK)
-                   ? esp_http_client_get_status_code(client)
-                   : 0;
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP perform failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    int status = esp_http_client_get_status_code(client);
+
+    if (status < 200 || status >= 300) {
+        ESP_LOGE(TAG, "HTTP status %d", status);
+        esp_http_client_cleanup(client);
+        return false;
+    }
 
     esp_http_client_cleanup(client);
-
-    return (err == ESP_OK && status >= 200 && status < 300);
+    return true;
 }
 
 /* --------------------------------------------------------------------------
