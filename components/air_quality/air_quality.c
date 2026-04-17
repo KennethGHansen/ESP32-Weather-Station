@@ -46,13 +46,17 @@ air_quality_out_t air_quality_update(air_quality_t *aq, float gas_resistance_ohm
     {
         if (elapsed_sec >= s_cfg.warmup_time_sec)
         {
-            /* First valid baseline initialization */
             aq->baseline_ohms = gas_resistance_ohms;
             aq->baseline_ready = true;
+
+            /* immediately report baseline as valid */
+            out.ready = true;
+            out.ratio = 1.0f;
+            out.text  = "Normal             ";
+            return out;
         }
         else
         {
-            /* Still warming up */
             return out;
         }
     }

@@ -517,7 +517,7 @@ static void sensor_task(void *arg)
     /* ------------------------------------------------------------
      * Gas cadence control
      * ------------------------------------------------------------ */
-    #define GAS_PERIOD_S   0xFFFFFFFFF//10  // measure gas every 10 seconds
+    #define GAS_PERIOD_S   10  // measure gas every 10 seconds
 
     static uint32_t s_tick = 0;                 // increments on each completed sample
     static bool     s_pending_gas = false;      // true if THIS cycle includes gas
@@ -613,14 +613,14 @@ static void sensor_task(void *arg)
                 air_quality_out_t aq_out = s_last_aq;
 
                 if (s_pending_gas) {
-                    if (data.status & BME68X_HEAT_STAB_MSK) {
-                        s_last_gas_ohm = data.gas_resistance;
-                        s_last_aq = air_quality_update(&g_airq, s_last_gas_ohm);
-                        aq_out = s_last_aq;
-                        s_have_gas = true;
-                    }
+                    s_last_gas_ohm = data.gas_resistance;
+                    s_last_aq = air_quality_update(&g_airq, s_last_gas_ohm);
+                    aq_out = s_last_aq;
+                    s_have_gas = true;
                     /* else: heater not stable — ignore gas */
-                }
+                }        
+                /* ALWAYS publish latest AQ state */
+                aq_out = s_last_aq;
 
                 /* Always publish last known valid gas value */
                 if (s_have_gas) {
@@ -771,7 +771,7 @@ void app_main(void)
     baro_forecast_init(&g_baro, &cfg_baro);
 
     air_quality_cfg_t aq_cfg = {
-        .warmup_time_sec = 30 * 60,
+        .warmup_time_sec = 30 * 60,   // Set actual warmup time
         .baseline_alpha = 0.05f
     };
     air_quality_init(&g_airq, &aq_cfg);
