@@ -96,7 +96,7 @@ static uint32_t g_boot_id = 0;
  * Temperature offset for better ambient temperature
  * (experience showed that -3C works for me)
  */
-#define BOARD_TEMP_OFFSET_C (-3.0f)
+#define BOARD_TEMP_OFFSET_C (-4.0f)
 
 /**
  * Joystick pins
@@ -514,121 +514,187 @@ static void sensor_task(void *arg)
     int64_t next_trigger_us = 0;
     int64_t ready_at_us = 0;
 
+    /* ------------------------------------------------------------
+     * Gas cadence control
+     * ------------------------------------------------------------ */
+    #define GAS_PERIOD_S   0xFFFFFFFFF//10  // measure gas every 10 seconds
+
+    static uint32_t s_tick = 0;                 // increments on each completed sample
+    static bool     s_pending_gas = false;      // true if THIS cycle includes gas
+
+    /* Cache last valid gas + AQ so UI/WIFI update every second */
+    static bool               s_have_gas = false;
+    static float              s_last_gas_ohm = 0.0f;
+    static air_quality_out_t s_last_aq = {
+        .ratio = 0.0f,
+        .ready = false,
+        .text  = "Warming up"
+    };
+
+
+    /* Cache last clean (non‑heated) temperature */
+    static float s_last_clean_temp = 0.0f;
+
     while (1) {
 
         int64_t now_us = esp_timer_get_time();
 
-        /* 1 Hz cadence for starting a sample */
-        if (next_trigger_us == 0) 
-        {            
+        /* --------------------------------------------------------
+         * 1 Hz cadence for starting a sample
+         * -------------------------------------------------------- */
+        if (next_trigger_us == 0)
+        {
             next_trigger_us = now_us;  /* start immediately at boot */
         }
 
         if (st == MEAS_IDLE && now_us >= next_trigger_us)
         {
-            /* Trigger measurement (fast) */
+            /* ----------------------------------------------------
+             * Decide whether this cycle includes gas
+             * ---------------------------------------------------- */
+            bool do_gas = ((s_tick % GAS_PERIOD_S) == 0);
+            s_pending_gas = do_gas;
+
+            /* Enable/disable gas heater accordingly */
+            bme68x_esp32_set_gas_enabled(&g_sensor, do_gas);
+
+            /* Trigger measurement (non‑blocking) */
             int8_t rslt = bme68x_esp32_trigger_forced(&g_sensor);
 
-            if (rslt == BME68X_OK) 
+            if (rslt == BME68X_OK)
             {
                 uint32_t dur_us = bme68x_esp32_forced_duration_us(&g_sensor);
                 ready_at_us = now_us + (int64_t)dur_us;
                 st = MEAS_WAITING;
             }
-         
-            /* Schedule next trigger in 1 second regardless of readout timing */
+
+            /* Schedule next trigger strictly every second */
             next_trigger_us += 1000000;
         }
 
-        if (st == MEAS_WAITING && now_us >= ready_at_us) 
+        /* --------------------------------------------------------
+         * Readout state
+         * -------------------------------------------------------- */
+        if (st == MEAS_WAITING && now_us >= ready_at_us)
         {
-            
             struct bme68x_data data;
             int8_t rslt = bme68x_esp32_try_read_forced(&g_sensor, &data);
 
-            if (rslt == BME68X_OK) 
-            {              
-                ESP_LOGI(TAG,"T=%.2fC RH=%.2f%% P=%.2fPa Gas=%.0fOhm status=0x%02X",
-                        data.temperature,
-                        data.humidity,
-                        data.pressure,
-                        data.gas_resistance,
-                        data.status);
-                // Static offset of measured temperature
+            if (rslt == BME68X_OK)
+            {
+                ESP_LOGI(TAG,
+                         "T=%.2fC RH=%.2f%% P=%.2fPa Gas=%.0fOhm status=0x%02X",
+                         data.temperature,
+                         data.humidity,
+                         data.pressure,
+                         data.gas_resistance,
+                         data.status);
+
+                /* ------------------------------------------------
+                 * Temperature handling
+                 * ------------------------------------------------ */                
                 float ambient = data.temperature + BOARD_TEMP_OFFSET_C;
+
+                /* Seed temperature cache on first ever measurement */
+                if (!g_have_last) {
+                    s_last_clean_temp = ambient;
+                }
+
+                /* Only trust temperature from non‑heated cycles */
+                if (!s_pending_gas) {
+                    s_last_clean_temp = ambient;
+                }
+
+                float ambient_out = s_last_clean_temp;
                 
-                /* ----------------------------------------------------
-                * Update models
-                * ---------------------------------------------------- */
+                /* ------------------------------------------------
+                 * Gas + AQ handling (ONLY on gas cycles)
+                 * ------------------------------------------------ */
+                air_quality_out_t aq_out = s_last_aq;
+
+                if (s_pending_gas) {
+                    if (data.status & BME68X_HEAT_STAB_MSK) {
+                        s_last_gas_ohm = data.gas_resistance;
+                        s_last_aq = air_quality_update(&g_airq, s_last_gas_ohm);
+                        aq_out = s_last_aq;
+                        s_have_gas = true;
+                    }
+                    /* else: heater not stable — ignore gas */
+                }
+
+                /* Always publish last known valid gas value */
+                if (s_have_gas) {
+                    data.gas_resistance = s_last_gas_ohm;
+                }
+
+                /* ------------------------------------------------
+                 * Update models
+                 * ------------------------------------------------ */
                 baro_forecast_update_pa(&g_baro, data.pressure);
                 float slp_hpa = baro_forecast_slp_hpa(&g_baro);
-                air_quality_out_t aq_out = air_quality_update(&g_airq, data.gas_resistance);
-                
-                /* ----------------------------------------------------
-                * Update min/max
-                * ---------------------------------------------------- */
+
+                /* ------------------------------------------------
+                 * Update min/max and shared cache
+                 * ------------------------------------------------ */
                 portENTER_CRITICAL(&g_lock);
-                minmax_update(&g_minmax, ambient, data.humidity, slp_hpa);
-                g_last_data = data;
-                g_last_ambient = ambient;
-                g_last_aq = aq_out;
-                g_have_last = true;
+                minmax_update(&g_minmax, ambient_out, data.humidity, slp_hpa);
+                g_last_data     = data;
+                g_last_ambient  = ambient_out;
+                g_last_aq       = aq_out;
+                g_have_last     = true;
                 portEXIT_CRITICAL(&g_lock);
 
                 g_ui_dirty = true;
-                
-                /* ----------------------------------------------------
-                * Update buffer for WIFI transfer (ring buffer ensures no blocking)
-                * ---------------------------------------------------- */
-                // Struct for WIFI data
-                weather_sample_t s = {0};          
-                if (esp_time_is_valid()) {
-                    s.ts = (uint32_t)time(NULL);   // real wall‑clock time (seconds)
-                } else {
-                    s.ts = 0;                      // explicitly “unknown / not synced”
-                }
-                s.temp_c_cal = ambient;             // calibrated temperature
-                s.rh_percent_raw = data.humidity;   // raw humidity
-                s.pressure_pa_raw = data.pressure;  // raw pressure if you have it here, else 0
-                s.gas_resistance_ohm = data.gas_resistance; // raw gas measurements            
-                s.slp_pa  = slp_hpa * 100.0f;       // hPa -> Pa      
-                s.aq_ratio = aq_out.ratio;          // air quaility ratio
-                s.aq_ready = aq_out.ready;          // ready indicatior
-                s.aq_text = aq_out.text;            // air quality text 
-                s.baro_forecast_text = baro_forecast_text(&g_baro);                         // barometer forecast
-                s.baro_trend_text = baro_trend_str(baro_forecast_trend(&g_baro));           // barometer trend text
-                s.baro_storm_text = storm_level_str(baro_forecast_storm_level(&g_baro));    // barometer alert text       
-                s.temp_min_c  = g_minmax.temp_min_c;
-                s.temp_max_c  = g_minmax.temp_max_c;
-                s.rh_min_pct  = g_minmax.rh_min;
-                s.rh_max_pct  = g_minmax.rh_max;
-                s.press_min_pa = g_minmax.press_min_hpa;
-                s.press_max_pa = g_minmax.press_max_hpa;
- 
-                s.flags = 0;
-                s.boot_id = g_boot_id;              // attach persistent reboot/session id to every sample
-                
-                ESP_LOGI("QUEUE", "pushed sample: T=%.2f RH=%.2f P=%.2f",
-                s.temp_c_cal, s.rh_percent_raw, s.pressure_pa_raw);
 
+                /* ------------------------------------------------
+                 * Update WIFI ring buffer (non‑blocking)
+                 * ------------------------------------------------ */
+                weather_sample_t s = {0};
 
-                /* Push into queue (never blocks) */
+                s.ts = esp_time_is_valid() ? (uint32_t)time(NULL) : 0;
+                s.temp_c_cal           = ambient_out;
+                s.rh_percent_raw       = data.humidity;
+                s.pressure_pa_raw      = data.pressure;
+                s.gas_resistance_ohm   = data.gas_resistance;
+                s.slp_pa               = slp_hpa * 100.0f;
+                s.aq_ratio             = aq_out.ratio;
+                s.aq_ready             = aq_out.ready;
+                s.aq_text              = aq_out.text;
+                s.baro_forecast_text   = baro_forecast_text(&g_baro);
+                s.baro_trend_text      = baro_trend_str(baro_forecast_trend(&g_baro));
+                s.baro_storm_text      = storm_level_str(baro_forecast_storm_level(&g_baro));
+                s.temp_min_c           = g_minmax.temp_min_c;
+                s.temp_max_c           = g_minmax.temp_max_c;
+                s.rh_min_pct           = g_minmax.rh_min;
+                s.rh_max_pct           = g_minmax.rh_max;
+                s.press_min_pa         = g_minmax.press_min_hpa;
+                s.press_max_pa         = g_minmax.press_max_hpa;
+                s.flags                = 0;
+                s.boot_id              = g_boot_id;
+
+                ESP_LOGI("QUEUE",
+                         "pushed sample: T=%.2f RH=%.2f P=%.2f",
+                         s.temp_c_cal,
+                         s.rh_percent_raw,
+                         s.pressure_pa_raw);
+
                 if (xSemaphoreTake(weather_q_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
                     weather_queue_push(&weather_q, &s);
                     xSemaphoreGive(weather_q_mutex);
                 }
 
-
-                /* Done with this cycle */
+                /* ------------------------------------------------
+                 * Advance cadence
+                 * ------------------------------------------------ */
+                s_tick++;
                 st = MEAS_IDLE;
             }
-            else
-            {   
-                /* Still not ready; keep waiting but do not block */
-                /* (Optional) push ready_at_us a little forward */
-                ready_at_us = now_us + 2000; /* 2ms retry spacing */
+            else {
+                /* Not ready yet — retry shortly */
+                ready_at_us = now_us + 2000;
             }
         }
+
         vTaskDelay(1);
     }
 }
@@ -706,7 +772,7 @@ void app_main(void)
 
     air_quality_cfg_t aq_cfg = {
         .warmup_time_sec = 30 * 60,
-        .baseline_alpha = 0.01f
+        .baseline_alpha = 0.05f
     };
     air_quality_init(&g_airq, &aq_cfg);
 

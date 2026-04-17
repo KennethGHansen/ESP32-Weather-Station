@@ -287,27 +287,23 @@ uint32_t bme68x_esp32_forced_duration_us(bme68x_esp32_t *s)
 {
     if (!s) return 0;
 
-    /* 1) Base TPH (temperature / pressure / humidity) duration */
     uint32_t tph_us = bme68x_get_meas_dur(
         BME68X_FORCED_MODE,
         &s->conf_cache,
         &s->dev
     );
 
-    /* 2) Gas heater duration
-     *
-     * You configured:
-     *   heatr_conf.heatr_dur = 150 ms
-     *
-     * In forced mode, Bosch runs the heater ONCE per measurement.
-     * This time is NOT included in bme68x_get_meas_dur().
-     */
-    uint32_t gas_heater_us = 150000;  // 150 ms → microseconds
+    /* Gas heater duration only applies if heater is enabled */
+    uint32_t gas_heater_us = 0;
 
-    /* 3) Guard time (same idea you already used, but explicit) */
-    uint32_t guard_us = 1000;
+    struct bme68x_heatr_conf heatr_conf;
+    if (bme68x_get_heatr_conf(&heatr_conf, &s->dev) == BME68X_OK) {
+        if (heatr_conf.enable == BME68X_ENABLE) {
+            gas_heater_us = heatr_conf.heatr_dur * 1000UL;
+        }
+    }
 
-    return tph_us + gas_heater_us + guard_us;
+    return tph_us + gas_heater_us + 1000; // guard
 }
 
 /* 3) Try to read results (no waiting). Caller decides when to call this. */
@@ -321,4 +317,32 @@ int8_t bme68x_esp32_try_read_forced(bme68x_esp32_t *s, struct bme68x_data *out)
 
     if (n_fields == 0) return BME68X_W_NO_NEW_DATA;
     return BME68X_OK;
+}
+
+/**
+ * Enable or disable gas measurement (heater) for FORCED mode.
+ *
+ * When disabled:
+ *  - The gas heater is OFF
+ *  - Measurement sequence becomes TPH only
+ *  - Self-heating is dramatically reduced
+ *
+ * When enabled:
+ *  - Uses the previously configured heater temperature and duration
+ */
+int8_t bme68x_esp32_set_gas_enabled(bme68x_esp32_t *s, bool enable)
+{
+    if (!s) return BME68X_E_NULL_PTR;
+
+    struct bme68x_heatr_conf heatr_conf;
+    memset(&heatr_conf, 0, sizeof(heatr_conf));
+
+    /* Preserve your existing heater profile */
+    heatr_conf.enable     = enable ? BME68X_ENABLE : BME68X_DISABLE;
+    heatr_conf.heatr_temp = 320;   // must match your default config
+    heatr_conf.heatr_dur  = 150;   // ms
+
+    return bme68x_set_heatr_conf(BME68X_FORCED_MODE,
+                                 &heatr_conf,
+                                 &s->dev);
 }
