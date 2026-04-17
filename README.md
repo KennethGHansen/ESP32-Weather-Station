@@ -20,8 +20,9 @@ repo will only serve as a backup platform.
 - [X] Add ESP32 RTOS task management
 - [X] Add push button
 - [X] Add WiFi
-- [ ] Add proximity activation
-- [ ] Power optimation
+- [ ] Optional: Add proximity activation
+- [ ] Optional: Power optimation
+- [ ] Optional: Add outside temperature/humidity sensor
 
 More to come!
 
