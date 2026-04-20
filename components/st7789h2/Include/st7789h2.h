@@ -64,6 +64,12 @@ void st7789h2_draw_char_scaled(uint16_t x, uint16_t y, char c,
 void st7789h2_draw_string_scaled(uint16_t x, uint16_t y, const char *str,
                                  uint16_t color, uint16_t bg, uint8_t scale);
 
+void st7789h2_draw_char_scaled_fast(uint16_t x, uint16_t y, char c,
+                                    uint16_t color, uint16_t bg, uint8_t scale);
+
+void st7789h2_draw_string_scaled_fast(uint16_t x, uint16_t y, const char *str,
+                                      uint16_t color, uint16_t bg, uint8_t scale);
+
 #ifdef __cplusplus
 }
 #endif

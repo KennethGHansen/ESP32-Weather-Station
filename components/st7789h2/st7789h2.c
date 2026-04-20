@@ -337,3 +337,89 @@ void st7789h2_draw_string_scaled(uint16_t x, uint16_t y, const char *str,
         str++;
     }
 }
+
+// Writes a rectangular block of RGB565 pixels (already byte-swapped for wire)
+static void lcd_write_pixels_window(uint16_t x0, uint16_t y0,
+                                    uint16_t x1, uint16_t y1,
+                                    const uint16_t *pixels_be, int pixel_count)
+{
+    // Set drawing window once (CASET/RASET/RAMWR)
+    lcd_set_address_window(x0, y0, x1, y1);
+
+    // Stream all pixels in one go (or a few chunks if needed)
+    lcd_write_data(pixels_be, pixel_count * 2);
+}
+
+void st7789h2_draw_char_scaled_fast(uint16_t x, uint16_t y, char c,
+                                    uint16_t color, uint16_t bg, uint8_t scale)
+{
+    if (scale == 0) return;
+    if (c < 32 || c > 126) return;
+
+    uint8_t idx = (uint8_t)(c - 32);
+
+    // Glyph dimensions (optionally include spacing column)
+    const int gw = 5 * scale;
+    const int gh = 7 * scale;
+
+    // Optional spacing column/row:
+    const int out_w = gw + scale;   // 1 "pixel column" scaled for spacing
+    const int out_h = gh + scale;   // 1 "pixel row" scaled for spacing (nice line gap)
+
+    // Clip early if completely off-screen
+    if (x >= s_cfg.width || y >= s_cfg.height) return;
+    if (x + out_w - 1 >= s_cfg.width)  return;   // simplest: no partial clipping
+    if (y + out_h - 1 >= s_cfg.height) return;
+
+    // Prepare colors in big-endian-on-wire once
+    uint16_t fg_be = rgb565_to_be(color);
+    uint16_t bg_be = rgb565_to_be(bg);
+
+    // For typical scales (1..4), this is small enough.
+    // But for DMA, allocate from MALLOC_CAP_DMA once and reuse if you want max speed.
+    // Here: stack buffer for simplicity.
+    uint16_t buf[out_w * out_h];
+
+    // Fill background
+    for (int i = 0; i < out_w * out_h; i++) buf[i] = bg_be;
+
+    // Draw glyph pixels
+    for (int col = 0; col < 5; col++) {
+        uint8_t line = Font5x7[idx][col];
+        for (int row = 0; row < 7; row++) {
+            uint16_t px = (line & 0x01) ? fg_be : bg_be;
+
+            // Scale this font pixel into a scale x scale block
+            int x0 = col * scale;
+            int y0 = row * scale;
+            for (int dy = 0; dy < scale; dy++) {
+                for (int dx = 0; dx < scale; dx++) {
+                    buf[(y0 + dy) * out_w + (x0 + dx)] = px;
+                }
+            }
+            line >>= 1;
+        }
+    }
+
+    // One window + one data stream:
+    lcd_write_pixels_window(x, y, x + out_w - 1, y + out_h - 1, buf, out_w * out_h);
+}
+
+void st7789h2_draw_string_scaled_fast(uint16_t x, uint16_t y, const char *str,
+                                      uint16_t color, uint16_t bg, uint8_t scale)
+{
+    uint16_t orig_x = x;
+    uint16_t line_height = 8 * scale; // 7px glyph + 1px spacing
+
+    while (*str) {
+        if (*str == '\n') {
+            y += line_height;
+            x = orig_x;
+            str++;
+            continue;
+        }
+        st7789h2_draw_char_scaled_fast(x, y, *str, color, bg, scale);
+        x += 6 * scale; // 5px + 1px spacing
+        str++;
+    }
+}

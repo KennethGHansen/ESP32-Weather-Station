@@ -33,7 +33,7 @@
  */
 static inline void ui_draw_text(uint16_t x, uint16_t y, uint8_t scale, const char *s)
 {
-    st7789h2_draw_string_scaled(x, y, s, UI_FG, UI_BG, scale);
+    st7789h2_draw_string_scaled_fast(x, y, s, UI_FG, UI_BG, scale);
 }
 
 /**
@@ -98,13 +98,13 @@ void ui_render_frame(const ui_layout_t *layout,
     /* Draw raised "0" and then "C" (preserved idea from your original code) */
     int text_width = (int)strlen(buf) * FONT_W * scale - 10;
 
-    st7789h2_draw_string_scaled(x + text_width,
+    st7789h2_draw_string_scaled_fast(x + text_width,
                                y - (scale * 4),
                                "0",
                                UI_FG, UI_BG,
                                (scale > 1) ? (scale - 1) : 1);
 
-    st7789h2_draw_string_scaled(x + text_width + (FONT_W * ((scale > 1) ? (scale - 1) : 1)),
+    st7789h2_draw_string_scaled_fast(x + text_width + (FONT_W * ((scale > 1) ? (scale - 1) : 1)),
                                y,
                                "C",
                                UI_FG, UI_BG,
