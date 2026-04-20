@@ -30,7 +30,7 @@ More to come!
 
 ## Working revision
 v0.7 - ESP32 Weather station running with public access on: https://weather-station.kghansen123.workers.dev/
-v0.8 - WIP: Fix Bosch temperature measurement to be more accurate
+v0.8 - Fixed: Bosch temperature measurement to be more accurate
 
 ---
 
