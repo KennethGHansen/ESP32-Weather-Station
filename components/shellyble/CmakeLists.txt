@@ -1,0 +1,8 @@
+idf_component_register(
+    SRCS
+        "shellyble.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        bt nvs_flash mbedtls
+)

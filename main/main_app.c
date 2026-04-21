@@ -37,6 +37,7 @@
 #include "st7789h2.h"
 #include "ui.h"
 #include "air_quality.h"
+#include "shellyble.h"
 
 // Buttons + min/max + UI state machine
 #include "pushbuttons.h"
@@ -108,7 +109,7 @@ static uint32_t g_boot_id = 0;
 #define JOY_DOWN_GPIO  GPIO_NUM_16 // GPIOx_DOWN
 
 /* -------------------------------------------------------------------------- */
-/* Global objects/state                                                        */
+/* Global objects/state                                                       */
 /* -------------------------------------------------------------------------- */
 static bme68x_esp32_t  g_sensor;
 static baro_forecast_t g_baro;
@@ -126,6 +127,14 @@ static bool                g_have_last = false;
 static struct bme68x_data  g_last_data;
 static float               g_last_ambient = 0.0f;
 static air_quality_out_t   g_last_aq;
+
+/* -------------------------------------------------------------------------- */
+/* Shelly BLU H&T (BLE) cached data                                           */
+/* -------------------------------------------------------------------------- */
+static bool    g_shelly_valid = false;     // false until first packet received
+static float   g_shelly_temp_c = 0.0f;     // outdoor temperature
+static float   g_shelly_rh_pct = 0.0f;     // outdoor humidity
+static uint8_t g_shelly_batt_pct = 0;      // battery percentage
 
 /**
  * Small critical section lock (Used to aviod crashes between cores):
@@ -250,7 +259,6 @@ static void boot_id_init(void)
 /* -------------------------------------------------------------------------- */
 static void wifi_init_sta(void)
 {
-    ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     esp_netif_create_default_wifi_sta();
 
@@ -304,7 +312,7 @@ static st7789h2_config_t cfg_disp = {
     .pin_dc = 46,
     .pin_rst = 14,
     .pin_bckl = -1,
-    .spi_clock_hz = 10 * 1000 * 1000,
+    .spi_clock_hz = 20 * 1000 * 1000,  //Changed from 10 MHz -> 20 MHz (revision v0.10)
     .spi_mode = 0,
     .width = 240,
     .height = 320,
@@ -416,7 +424,117 @@ static void pb_callback(pb_button_t btn, void *user)
     {
         xTaskNotifyGive(g_ui_task_handle);
     }
+}
 
+/* -------------------------------------------------------------------------- */
+/* Shelly BLU H&T callback                                                     */
+/*                                                                            */
+/* This function is called by the Shelly BLE module whenever a BTHome packet   */
+/* is decoded (temperature/humidity/battery/button may or may not be present). */
+/*                                                                            */
+/* IMPORTANT RULES (keep system stable):                                      */
+/*  - Do NOT draw here                                                        */
+/*  - Do NOT do Wi-Fi / queue work here                                       */
+/*  - Do NOT block here                                                       */
+/*  - Keep the critical section VERY short (copy values only)                 */
+/*                                                                            */
+/* We only copy decoded values into the shared "cached BLE state" globals.     */
+/* The UI task will later read those globals and display them.                 */
+/* -------------------------------------------------------------------------- */
+static void shellyble_on_update(const shellyble_update_t *u, void *user)
+{
+    (void)user;  // not used for now
+
+    /* ----------------------------------------------------------------------
+     * CRITICAL SECTION START
+     *
+     * We protect shared state with the SAME g_lock used elsewhere.
+     * This ensures:
+     *  - BLE task writing values cannot race with UI task reading values
+     *  - updates are atomic at the “copy” level
+     *
+     * Keep it short:
+     *  - no logging
+     *  - no drawing
+     *  - no heap allocation
+     * ---------------------------------------------------------------------- */
+    portENTER_CRITICAL(&g_lock);
+
+    /* Update each field only if it was present in the packet.
+     * Some packets may contain only packet-id or only partial data.
+     * We don't want to overwrite good values with missing ones.
+     */
+    if (u->has_temp) {
+        g_shelly_temp_c = u->temp_c;
+    }
+
+    if (u->has_hum) {
+        g_shelly_rh_pct = (float)u->hum_pct;
+    }
+
+    if (u->has_batt) {
+        g_shelly_batt_pct = u->batt_pct;
+    }
+
+    /* Validity rule:
+     * We mark the BLE data "valid" only after we have received at least
+     * ONE real measurement field (temp OR humidity OR battery).
+     *
+     * This supports your requirement:
+     *  - On restart, UI can show "---" until valid becomes true.
+     */
+    if (u->has_temp || u->has_hum || u->has_batt) {
+        g_shelly_valid = true;
+    }
+
+    portEXIT_CRITICAL(&g_lock);
+    /* ----------------------------------------------------------------------
+     * CRITICAL SECTION END
+     * ---------------------------------------------------------------------- */
+
+    /* ----------------------------------------------------------------------
+     * UI refresh request
+     *
+     * We only REQUEST a redraw here.
+     * The UI task decides when and how to render.
+     *
+     * This keeps BLE asynchronous and never blocking UI responsiveness.
+     * ---------------------------------------------------------------------- */
+    g_ui_dirty = true;
+
+    /* If UI task exists, nudge it to run immediately (same pattern used
+     * for button presses). This avoids waiting for its next tick.
+     */
+    if (g_ui_task_handle) {
+        xTaskNotifyGive(g_ui_task_handle);
+    }
+
+    /* Optional: add a DEBUG log later if needed, but DO NOT log inside the
+     * critical section.
+     *
+     * Example (only if debugging):
+     * ESP_LOGI("SHELLY", "Updated: valid=%d T=%.1f RH=%.0f BAT=%u",
+     *          g_shelly_valid, g_shelly_temp_c, g_shelly_rh_pct, g_shelly_batt_pct);
+     */
+    /* TEMPORARY DEBUG — confirms BLE data reception */
+    /* Only treat packets with real measurements as an "update" */
+    if (u->has_temp || u->has_hum || u->has_batt) {
+
+        static int64_t s_last_rx_us = -1;      // persists across calls
+        int64_t now_us = esp_timer_get_time(); // µs since boot
+
+        if (s_last_rx_us >= 0) {
+            int64_t delta_us = now_us - s_last_rx_us;
+
+            ESP_LOGI("SHELLY",
+                    "Δt since last Shelly measurement: %.3f s",
+                    (double)delta_us / 1000000.0);
+        } else {
+            ESP_LOGI("SHELLY", "First Shelly measurement received");
+        }
+
+        s_last_rx_us = now_us;
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -705,6 +823,15 @@ static void sensor_task(void *arg)
 void app_main(void)
 {
     /* --------------------------------------------------------------
+     * Correct partition setup
+     * -------------------------------------------------------------- */
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ESP_ERROR_CHECK(nvs_flash_init());
+    }
+
+    /* --------------------------------------------------------------
      * Display init
      * -------------------------------------------------------------- */
     ESP_ERROR_CHECK(st7789h2_init(&cfg_disp));
@@ -801,4 +928,31 @@ void app_main(void)
      * -------------------------------------------------------------- */
     xTaskCreate(ui_task,     "ui_task",     4096, NULL, 5, &g_ui_task_handle);
     xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 4, NULL);
+
+    /* --------------------------------------------------------------
+    * Start Shelly BLE (after UI task handle exists)
+    * -------------------------------------------------------------- */
+    {// just a C local scope block. Variables declared inside that block stop existing at the closing }.
+
+    shellyble_config_t ble_cfg = {0};
+
+    /* Wire the callback that updates g_shelly_* globals */
+    ble_cfg.cb = shellyble_on_update;
+    ble_cfg.cb_user = NULL;
+
+    /* Optional: if you want to lock to one device, enable this later:
+     * ble_cfg.filter_by_mac = true;
+     * memcpy(ble_cfg.target_mac, (uint8_t[]){0x0C,0xEF,0xF6,0x02,0xCF,0x97}, 6);
+     */
+
+    /* Keep BLE logs quiet for now */
+    ble_cfg.log_alive = false;
+    ble_cfg.log_raw_plaintext = false;
+
+    /* Encryption support not needed right now */
+    ble_cfg.decrypt_enabled = false;
+
+    ESP_ERROR_CHECK(shellyble_start(&ble_cfg));
+
+    }// just a C local scope block. Variables declared inside that block stop existing at the closing }.
 }

@@ -13,6 +13,8 @@ Further work will happen on the frontend via my repo: Weather-Station-Frontend
 For practical reasons i am not using GitHubs internal deployment (Github Pages) anymore, but Cloudflare, so this 
 repo will only serve as a backup platform.
 
+@ version 0.10. Remember to setup for Components <> Bluetooth <> NimBLE only, controller on in idf.py menuconfig
+
 ---
 
 ## TODO list

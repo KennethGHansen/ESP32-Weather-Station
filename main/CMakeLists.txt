@@ -13,6 +13,7 @@ idf_component_register(
         ui_controller
         minmax_stats
         pushbuttons
+        shellyble
         esp_timer
         esp_wifi 
         esp_netif 
