@@ -26,16 +26,6 @@
 #define UI_DIM  0x7BEF   // gray-ish
 #define UI_ACC  0x001F   // blue
 
-/* For timing between showing indoor and outdoor temperature and humidity seperatly */
-typedef enum {
-    UI_VIEW_INDOOR = 0,
-    UI_VIEW_OUTDOOR
-} ui_view_t;
-
-static ui_view_t s_view = UI_VIEW_INDOOR;
-static int64_t s_view_last_switch_us = 0;
-
-
 /**
  * Helper: draw a string that overwrites its background.
  * Because bg color is supplied, this naturally "clears" the previous characters
@@ -88,7 +78,7 @@ static inline void ui_draw_printf_padded(uint16_t x, uint16_t y, uint8_t scale,
 }
 
 void ui_render_frame(const ui_layout_t *layout,
-                     bool view,
+                     ui_view_mode_t view,
                      float ambient_temp_c,
                      float shelly_temp_c,
                      float shelly_rh_pct,
@@ -107,14 +97,18 @@ void ui_render_frame(const ui_layout_t *layout,
     /* ---------------------------------------------------------------------- */
     /* Temperature (Including raised "0" and "C")                             */
     /* ---------------------------------------------------------------------- */
-    //ui_draw_printf(x, y, scale, buf, sizeof(buf), "Temp: %.1f", ambient_temp_c);
-    if (shelly_valid) {
-        ui_draw_printf(x, y, scale, buf, sizeof(buf), "Temp: %.1f", shelly_temp_c);  //Test
-    }
-    else {
-        ui_draw_printf(x, y, scale, buf, sizeof(buf), "Temp: --.-");  //Test   
-    }
     
+    if (view == UI_VIEW_INDOOR) {
+        ui_draw_printf(x, y, scale, buf, sizeof(buf), "Tmp_In:  %.1f", ambient_temp_c);
+    }
+    else {    
+        if (shelly_valid) {
+            ui_draw_printf(x, y, scale, buf, sizeof(buf), "Tmp_Out: %.1f", shelly_temp_c);
+        }
+        else {
+            ui_draw_printf(x, y, scale, buf, sizeof(buf), "Tmp_Out: --.-");  
+        }
+    }
     /* Draw raised "0" and then "C" (preserved idea from your original code) */
     int text_width = (int)strlen(buf) * FONT_W * scale - 10;
 
@@ -135,22 +129,24 @@ void ui_render_frame(const ui_layout_t *layout,
     /* ---------------------------------------------------------------------- */
     /* Relative humidity                                                      */
     /* ---------------------------------------------------------------------- */
-    //ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum:  %.1f %%RH", data->humidity);
-    if (shelly_valid) {
-        ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum:  %.1f %%RH", shelly_rh_pct);
+    
+    if (view == UI_VIEW_INDOOR) {
+        ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum_In:  %.1f %%RH", data->humidity);
     }
     else {
-        ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum:  --.- %RH");
-
-    }
-    
-    
+        if (shelly_valid) {
+            ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum_Out: %.1f %%RH ", shelly_rh_pct);
+        }
+        else {
+            ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum_Out: --.- %%RH");
+        }
+    }        
     y += lh;
 
     /* ---------------------------------------------------------------------- */
     /* Barometer output (SLP + Forecast + Alerts/Trend)                        */
     /* ---------------------------------------------------------------------- */
-    ui_draw_printf(x, y, scale, buf, sizeof(buf), "SLP:  %.0f hPa", baro_forecast_slp_hpa(baro));
+    ui_draw_printf(x, y, scale, buf, sizeof(buf), "SeaLvP:  %.0f hPa", baro_forecast_slp_hpa(baro));
     y += lh;
 
     y += lh;
@@ -189,7 +185,7 @@ void ui_render_frame(const ui_layout_t *layout,
 }
 
 /* -------------------------------------------------------------------------- */
-/* NEW: Screen 2 renderer (MIN/MAX + confirmation prompt)                      */
+/* Screen 2 renderer (MIN/MAX + confirmation prompt)                          */
 /* -------------------------------------------------------------------------- */
 void ui_render_minmax(const ui_layout_t *layout,
                       const minmax_stats_t *s,
@@ -210,10 +206,16 @@ void ui_render_minmax(const ui_layout_t *layout,
 
         ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "      MIN   MAX    ");
         y += lh;
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "T(C):%5.1f %5.1f", s->temp_min_c, s->temp_max_c );
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "T_In: %5.1f %5.1f", s->temp_min_c, s->temp_max_c );
         y += lh;
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "H(%%):%5.1f %5.1f", s->rh_min, s->rh_max);
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "T_Out:%5.1f %5.1f", s->out_temp_min_c, s->out_temp_max_c);
         y += lh;
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "H_In: %5.1f %5.1f", s->rh_min, s->rh_max);
+        y += lh;
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "H_Out:%5.1f %5.1f", s->out_rh_min, s->out_rh_max);
+        y += lh;
+
+
         ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "P(h):%6.1f %6.1f", s->press_min_hpa, s->press_max_hpa);          
         y += lh;     
 

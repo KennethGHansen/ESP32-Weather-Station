@@ -29,12 +29,19 @@ typedef struct
     uint16_t x_pos;
 } ui_layout_t;
 
+// Small enum for timing logic between rendering inside or outside temp/hum on the display
+typedef enum {
+    UI_VIEW_INDOOR = 0,
+    UI_VIEW_OUTDOOR
+} ui_view_mode_t;
+
+
 /**
  * Render one full “frame” worth of UI text.
  * This function overwrites the same text regions each update.
  */
 void ui_render_frame(const ui_layout_t *layout,
-                     bool view,
+                     ui_view_mode_t view,
                      float ambient_temp_c,
                      float shelly_temp_c,
                      float shelly_rh_pct,

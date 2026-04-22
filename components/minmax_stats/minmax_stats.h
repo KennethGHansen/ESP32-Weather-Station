@@ -25,6 +25,11 @@ typedef struct
     float temp_min_c, temp_max_c;
     float rh_min,     rh_max;
     float press_min_hpa, press_max_hpa;
+    
+    // Min/max outdoor registers
+    bool  out_valid;
+    float out_temp_min_c, out_temp_max_c;
+    float out_rh_min, out_rh_max;
 
 } minmax_stats_t;
 
@@ -37,3 +42,6 @@ void minmax_update(minmax_stats_t *s, float temp_c, float rh, float press_pa);
 void minmax_reset_temp(minmax_stats_t *s);
 void minmax_reset_rh(minmax_stats_t *s);
 void minmax_reset_press(minmax_stats_t *s);
+
+/* Samples from outdoor measurements update */
+void minmax_update_outdoor(minmax_stats_t *m, float temp_c, float rh_pct);

@@ -71,12 +71,6 @@ static ui_screen_t g_last_screen = UI_SCREEN_OVERVIEW;
 static volatile bool g_ui_dirty = true;   // UI redraw request flag
 static TaskHandle_t g_ui_task_handle = NULL;
 
-// Small enum for timing logic between rendering inside or outside temp/hum on the display
-typedef enum {
-    UI_VIEW_INDOOR = 0,
-    UI_VIEW_OUTDOOR
-} ui_view_mode_t;
-
 // Persistent reboot counter (increments every time the ESP boots).
 // Stored in NVS so it survives reset + power cycle.
 static uint32_t g_boot_id = 0;
@@ -449,7 +443,7 @@ static void pb_callback(pb_button_t btn, void *user)
 /* -------------------------------------------------------------------------- */
 static void shellyble_on_update(const shellyble_update_t *u, void *user)
 {
-    (void)user;  // not used for now
+    (void)user;  // not used for now. Avoids -Wunused-parameter warnings
 
     /* ----------------------------------------------------------------------
      * CRITICAL SECTION START
@@ -491,6 +485,15 @@ static void shellyble_on_update(const shellyble_update_t *u, void *user)
      */
     if (u->has_temp || u->has_hum || u->has_batt) {
         g_shelly_valid = true;
+
+        /* --------------------------------------------
+         * UPDATE OUTDOOR MIN/MAX HERE
+         * --------------------------------------------
+         * This is the ONLY correct place to do it as valid outdoor data is present
+         */
+        minmax_update_outdoor(&g_minmax,
+                              g_shelly_temp_c,
+                              g_shelly_rh_pct);
     }
 
     portEXIT_CRITICAL(&g_lock);
@@ -563,24 +566,6 @@ static void ui_task(void *arg)
         .x_pos = 25
     };
 
-    // Decide if indoor or outdoor view is to be rendered
-    static ui_view_mode_t s_view = UI_VIEW_INDOOR;
-    static int64_t s_last_switch_us = 0;
-
-    int64_t now_us = esp_timer_get_time();
-
-    if (s_last_switch_us == 0) {
-        s_last_switch_us = now_us;
-    }
-
-    if (now_us - s_last_switch_us >= 5 * 1000000LL) {   // 5 second timing between screen renderings
-        s_view = (s_view == UI_VIEW_INDOOR) // If indoor shift to outdoor and vice versa (s_view is the indicator)
-                ? UI_VIEW_OUTDOOR
-                : UI_VIEW_INDOOR;       
-        s_last_switch_us = now_us;
-        g_ui_dirty = true;
-    }
-
     while (1) {
 
         if (g_ui_dirty) 
@@ -613,6 +598,24 @@ static void ui_task(void *arg)
 
             if (screen_changed) {
                 st7789h2_fill(0x0000);
+            }
+
+            // Decide if indoor or outdoor view is to be rendered
+            static ui_view_mode_t s_view = UI_VIEW_INDOOR;
+            static int64_t s_last_switch_us = 0;
+
+            int64_t now_us = esp_timer_get_time();
+
+            if (s_last_switch_us == 0) {
+                s_last_switch_us = now_us;
+            }
+
+            if (now_us - s_last_switch_us >= 10 * 1000000LL) {   // 10 second timing between screen renderings
+                s_view = (s_view == UI_VIEW_INDOOR) // If indoor shift to outdoor and vice versa (s_view is the indicator)
+                        ? UI_VIEW_OUTDOOR
+                        : UI_VIEW_INDOOR;       
+                s_last_switch_us = now_us;
+                g_ui_dirty = true;
             }
 
             ESP_LOGI(TAG, "Rendering screen=%d", screen);
