@@ -26,6 +26,16 @@
 #define UI_DIM  0x7BEF   // gray-ish
 #define UI_ACC  0x001F   // blue
 
+/* For timing between showing indoor and outdoor temperature and humidity seperatly */
+typedef enum {
+    UI_VIEW_INDOOR = 0,
+    UI_VIEW_OUTDOOR
+} ui_view_t;
+
+static ui_view_t s_view = UI_VIEW_INDOOR;
+static int64_t s_view_last_switch_us = 0;
+
+
 /**
  * Helper: draw a string that overwrites its background.
  * Because bg color is supplied, this naturally "clears" the previous characters
@@ -78,7 +88,11 @@ static inline void ui_draw_printf_padded(uint16_t x, uint16_t y, uint8_t scale,
 }
 
 void ui_render_frame(const ui_layout_t *layout,
+                     bool view,
                      float ambient_temp_c,
+                     float shelly_temp_c,
+                     float shelly_rh_pct,
+                     bool shelly_valid,
                      const struct bme68x_data *data,
                      const baro_forecast_t *baro,
                      const air_quality_out_t *aq_out)
@@ -93,8 +107,14 @@ void ui_render_frame(const ui_layout_t *layout,
     /* ---------------------------------------------------------------------- */
     /* Temperature (Including raised "0" and "C")                             */
     /* ---------------------------------------------------------------------- */
-    ui_draw_printf(x, y, scale, buf, sizeof(buf), "Temp: %.1f", ambient_temp_c);
-
+    //ui_draw_printf(x, y, scale, buf, sizeof(buf), "Temp: %.1f", ambient_temp_c);
+    if (shelly_valid) {
+        ui_draw_printf(x, y, scale, buf, sizeof(buf), "Temp: %.1f", shelly_temp_c);  //Test
+    }
+    else {
+        ui_draw_printf(x, y, scale, buf, sizeof(buf), "Temp: --.-");  //Test   
+    }
+    
     /* Draw raised "0" and then "C" (preserved idea from your original code) */
     int text_width = (int)strlen(buf) * FONT_W * scale - 10;
 
@@ -115,7 +135,16 @@ void ui_render_frame(const ui_layout_t *layout,
     /* ---------------------------------------------------------------------- */
     /* Relative humidity                                                      */
     /* ---------------------------------------------------------------------- */
-    ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum:  %.1f %%RH", data->humidity);
+    //ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum:  %.1f %%RH", data->humidity);
+    if (shelly_valid) {
+        ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum:  %.1f %%RH", shelly_rh_pct);
+    }
+    else {
+        ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum:  --.- %RH");
+
+    }
+    
+    
     y += lh;
 
     /* ---------------------------------------------------------------------- */

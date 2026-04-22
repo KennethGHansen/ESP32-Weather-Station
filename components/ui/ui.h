@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 #include "baro_forecast.h"
 #include "bme68x.h"
 #include "air_quality.h"
@@ -33,12 +34,17 @@ typedef struct
  * This function overwrites the same text regions each update.
  */
 void ui_render_frame(const ui_layout_t *layout,
+                     bool view,
                      float ambient_temp_c,
+                     float shelly_temp_c,
+                     float shelly_rh_pct,
+                     bool shelly_valid,
                      const struct bme68x_data *data,
                      const baro_forecast_t *baro,
                      const air_quality_out_t *aq_out);
 
-/* NEW: render Screen 2 (min/max + confirm prompt) */
+
+/* Render Screen 2 (min/max + confirm prompt) */
 void ui_render_minmax(const ui_layout_t *layout,
                       const minmax_stats_t *s,
                       bool confirm_active,

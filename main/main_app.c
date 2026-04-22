@@ -71,6 +71,12 @@ static ui_screen_t g_last_screen = UI_SCREEN_OVERVIEW;
 static volatile bool g_ui_dirty = true;   // UI redraw request flag
 static TaskHandle_t g_ui_task_handle = NULL;
 
+// Small enum for timing logic between rendering inside or outside temp/hum on the display
+typedef enum {
+    UI_VIEW_INDOOR = 0,
+    UI_VIEW_OUTDOOR
+} ui_view_mode_t;
+
 // Persistent reboot counter (increments every time the ESP boots).
 // Stored in NVS so it survives reset + power cycle.
 static uint32_t g_boot_id = 0;
@@ -547,7 +553,7 @@ static void shellyble_on_update(const shellyble_update_t *u, void *user)
 
 static void ui_task(void *arg)
 {
-    (void)arg;  // Backdoor for for private data into function to avoid global variable clutter
+    (void)arg;  // Backdoor for private data into function to avoid global variable clutter
 
     // UI layout shared between screens
     const ui_layout_t layout = {
@@ -556,6 +562,24 @@ static void ui_task(void *arg)
         .y_pos_start = 10,
         .x_pos = 25
     };
+
+    // Decide if indoor or outdoor view is to be rendered
+    static ui_view_mode_t s_view = UI_VIEW_INDOOR;
+    static int64_t s_last_switch_us = 0;
+
+    int64_t now_us = esp_timer_get_time();
+
+    if (s_last_switch_us == 0) {
+        s_last_switch_us = now_us;
+    }
+
+    if (now_us - s_last_switch_us >= 5 * 1000000LL) {   // 5 second timing between screen renderings
+        s_view = (s_view == UI_VIEW_INDOOR) // If indoor shift to outdoor and vice versa (s_view is the indicator)
+                ? UI_VIEW_OUTDOOR
+                : UI_VIEW_INDOOR;       
+        s_last_switch_us = now_us;
+        g_ui_dirty = true;
+    }
 
     while (1) {
 
@@ -592,22 +616,23 @@ static void ui_task(void *arg)
             }
 
             ESP_LOGI(TAG, "Rendering screen=%d", screen);
-
             if (screen == UI_SCREEN_OVERVIEW) {
 
                 if (g_have_last) {
                     ui_render_frame(&layout,
+                                    s_view,
                                     g_last_ambient,
+                                    g_shelly_temp_c,
+                                    g_shelly_rh_pct,
+                                    g_shelly_valid,
                                     &g_last_data,
                                     &g_baro,
-                                    &g_last_aq);
+                                    &g_last_aq);             
                 }
-
             } else {
 
                 ui_render_minmax(&layout, &g_minmax, confirm, tgt);
             }
-
             g_ui_dirty = false;
         }
 
