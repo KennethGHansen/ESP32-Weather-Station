@@ -55,4 +55,5 @@ void ui_render_frame(const ui_layout_t *layout,
 void ui_render_minmax(const ui_layout_t *layout,
                       const minmax_stats_t *s,
                       bool confirm_active,
-                      ui_confirm_target_t confirm_target);
+                      ui_confirm_target_t confirm_target,
+                      bool shelly_valid);

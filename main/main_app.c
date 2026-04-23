@@ -634,7 +634,7 @@ static void ui_task(void *arg)
                 }
             } else {
 
-                ui_render_minmax(&layout, &g_minmax, confirm, tgt);
+                ui_render_minmax(&layout, &g_minmax, confirm, tgt, g_shelly_valid);
             }
             g_ui_dirty = false;
         }

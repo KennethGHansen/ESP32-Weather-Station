@@ -115,54 +115,53 @@ void ui_render_frame(const ui_layout_t *layout,
                                  "Tmp_Out: --.- ~C");
         }
     }
-    
-    y += lh;
+    y += lh; // Line shift
 
     /* ---------------------------------------------------------------------- */
     /* Relative humidity                                                      */
     /* ---------------------------------------------------------------------- */
     
     if (view == UI_VIEW_INDOOR) {
-        ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum_In:  %.1f %%RH", data->humidity);
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28,  "Hum_In:  %.1f %%RH", data->humidity);
     }
     else {
         if (shelly_valid) {
-            ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum_Out: %.1f %%RH ", shelly_rh_pct);
+            ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "Hum_Out: %.1f %%RH ", shelly_rh_pct);
         }
         else {
-            ui_draw_printf(x, y, scale, buf, sizeof(buf), "Hum_Out: --.- %%RH");
+            ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28,  "Hum_Out: --.- %%RH");
         }
     }        
-    y += lh;
+    y += lh; 
 
     /* ---------------------------------------------------------------------- */
-    /* Barometer output (SLP + Forecast + Alerts/Trend)                        */
+    /* Barometer output (SLP + Forecast + Alerts/Trend)                       */
     /* ---------------------------------------------------------------------- */
-    ui_draw_printf(x, y, scale, buf, sizeof(buf), "SeaLvP:  %.0f hPa", baro_forecast_slp_hpa(baro));
-    y += lh;
+    ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "SeaLvP:  %.0f hPa", baro_forecast_slp_hpa(baro));
+    y += lh; 
 
     y += lh;
-    ui_draw_text(x, y, scale, "Forecast:");
+    ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "Forecast:");
     y += lh;
 
-    ui_draw_printf(x, y, scale, buf, sizeof(buf), "%s", baro_forecast_text(baro));
+    ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "%s", baro_forecast_text(baro));
     y += lh;
 
     storm_level_t storm = baro_forecast_storm_level(baro);
     if (storm != STORM_NONE)
     {
-        ui_draw_text(x, y, scale, "Alerts:");
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "Alerts:");
         y += lh;
 
-        ui_draw_printf(x, y, scale, buf, sizeof(buf), "%s", storm_level_str(storm));
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "%s", storm_level_str(storm));
         y += lh;
     }
     else
     {
-        ui_draw_text(x, y, scale, "Trend:");
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "Trend:");
         y += lh;
 
-        ui_draw_printf(x, y, scale, buf, sizeof(buf), "%s", baro_trend_str(baro_forecast_trend(baro)));
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "%s", baro_trend_str(baro_forecast_trend(baro)));
         y += lh;
     }
 
@@ -173,7 +172,7 @@ void ui_render_frame(const ui_layout_t *layout,
     y += lh;
 
     /* If not ready, aq_out->text is "Warming up..." (from module) */
-    ui_draw_printf(x, y, scale, buf, sizeof(buf), "%s", aq_out->text);
+    ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "%s", aq_out->text);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -182,7 +181,8 @@ void ui_render_frame(const ui_layout_t *layout,
 void ui_render_minmax(const ui_layout_t *layout,
                       const minmax_stats_t *s,
                       bool confirm_active,
-                      ui_confirm_target_t confirm_target)
+                      ui_confirm_target_t confirm_target,
+                      bool shelly_valid)
 {
     uint16_t x = layout->x_pos-10;
     uint16_t y = layout->y_pos_start-10;
@@ -196,33 +196,38 @@ void ui_render_minmax(const ui_layout_t *layout,
     /* ------------------------------------------------------------ */
     if (s && s->valid) {
 
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "      MIN   MAX    ");
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "       MIN   MAX    ");
         y += lh;
         ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "T_In: %5.1f %5.1f", s->temp_min_c, s->temp_max_c );
         y += lh;
+        if (shelly_valid)
         ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "T_Out:%5.1f %5.1f", s->out_temp_min_c, s->out_temp_max_c);
+        else
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "T_Out: ----  ----", s->out_temp_min_c, s->out_temp_max_c);
         y += lh;
         ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "H_In: %5.1f %5.1f", s->rh_min, s->rh_max);
         y += lh;
+        if (shelly_valid)
         ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "H_Out:%5.1f %5.1f", s->out_rh_min, s->out_rh_max);
+        else
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "H_Out: ----  ----", s->out_rh_min, s->out_rh_max);
         y += lh;
-
-
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "P(h):%6.1f %6.1f", s->press_min_hpa, s->press_max_hpa);          
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "SeaP:%6.1f %6.1f", s->press_min_hpa, s->press_max_hpa);          
         y += lh;     
 
     } else {
-
-
-
         /* No data yet – still show something */
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "      MIN   MAX    ");
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "       MIN   MAX    ");
         y += lh;
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "T(C): ----  ----", s->temp_min_c, s->temp_max_c );
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "T_In:  ----  ----", s->temp_min_c, s->temp_max_c );
         y += lh;
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "H(%%): ----  ----", s->rh_min, s->rh_max);
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "T_Out: ----  ----", s->out_temp_min_c, s->out_temp_max_c);
         y += lh;
-        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "P(h):------ ------", s->press_min_hpa, s->press_max_hpa);          
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "H_In:  ----  ----", s->rh_min, s->rh_max);
+        y += lh;
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "H_Out: ----  ----", s->out_rh_min, s->out_rh_max);
+        y += lh;
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, "SeaP:  ----  ----", s->press_min_hpa, s->press_max_hpa);          
         y += lh; 
     }
 
