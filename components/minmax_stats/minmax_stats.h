@@ -39,8 +39,8 @@ void minmax_init(minmax_stats_t *s);
 void minmax_update(minmax_stats_t *s, float temp_c, float rh, float press_pa);
 
 /* Reset min/max to the latest gathered sample */
-void minmax_reset_temp(minmax_stats_t *s);
-void minmax_reset_rh(minmax_stats_t *s);
+void minmax_reset_temp(minmax_stats_t *s, float temp_c);
+void minmax_reset_rh(minmax_stats_t *s, float rh_pct);
 void minmax_reset_press(minmax_stats_t *s);
 
 /* Samples from outdoor measurements update */

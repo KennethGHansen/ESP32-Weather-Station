@@ -90,16 +90,18 @@ void minmax_update_outdoor(minmax_stats_t *m, float temp_c, float rh_pct)
     if (rh_pct > m->out_rh_max) m->out_rh_max = rh_pct;
 }
 
-void minmax_reset_temp(minmax_stats_t *s)
+void minmax_reset_temp(minmax_stats_t *s, float temp_c)
 {
     if (!s || !s->valid) return;
     s->temp_min_c = s->temp_max_c = s->last_temp_c;
+    s->out_temp_min_c = s->out_temp_max_c = temp_c;
 }
 
-void minmax_reset_rh(minmax_stats_t *s)
+void minmax_reset_rh(minmax_stats_t *s, float rh_pct)
 {
     if (!s || !s->valid) return;
     s->rh_min = s->rh_max = s->last_rh;
+    s->out_rh_min = s->out_rh_max = rh_pct;
 }
 
 void minmax_reset_press(minmax_stats_t *s)

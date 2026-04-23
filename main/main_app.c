@@ -328,8 +328,8 @@ static void do_reset_for_target(ui_confirm_target_t tgt)
 {
     portENTER_CRITICAL(&g_lock);
     switch (tgt) {
-        case UI_CONFIRM_TEMP:  minmax_reset_temp(&g_minmax);  break;
-        case UI_CONFIRM_RH:    minmax_reset_rh(&g_minmax);    break;
+        case UI_CONFIRM_TEMP:  minmax_reset_temp(&g_minmax, g_shelly_temp_c);  break;
+        case UI_CONFIRM_RH:    minmax_reset_rh(&g_minmax, g_shelly_rh_pct);    break;
         case UI_CONFIRM_PRESS: minmax_reset_press(&g_minmax); break;
         default: break;
     }
