@@ -54,11 +54,11 @@ static inline void ui_draw_printf(uint16_t x, uint16_t y, uint8_t scale,
     ui_draw_text(x, y, scale, buf);
 }
 
-/*
+ /*
  * NEW helper: padded printf line (clears old longer text).
  * This is important for prompt lines where the text length can change.
  */
-static inline void ui_draw_printf_padded(uint16_t x, uint16_t y, uint8_t scale,
+static inline int ui_draw_printf_padded(uint16_t x, uint16_t y, uint8_t scale,
                                          char *buf, size_t buf_sz,
                                          int pad_width,
                                          const char *fmt, ...)
@@ -67,14 +67,17 @@ static inline void ui_draw_printf_padded(uint16_t x, uint16_t y, uint8_t scale,
 
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    // vsnprintf returns the length of the formatted text
+    int len = vsnprintf(tmp, sizeof(tmp), fmt, ap);
     va_end(ap);
+    if (len < 0) return 0;
 
     // Left pad to fixed width with spaces so old text is overwritten.
     // Example: "%-28s" prints at least 28 characters.
     snprintf(buf, buf_sz, "%-*s", pad_width, tmp);
 
     ui_draw_text(x, y, scale, buf);
+    return len;
 }
 
 void ui_render_frame(const ui_layout_t *layout,
@@ -92,38 +95,27 @@ void ui_render_frame(const ui_layout_t *layout,
     uint8_t  scale = layout->scale;
     uint16_t lh = layout->line_height;
 
-    char buf[64];
-
+    char buf[64]; 
+    
     /* ---------------------------------------------------------------------- */
     /* Temperature (Including raised "0" and "C")                             */
-    /* ---------------------------------------------------------------------- */
-    
+    /* ---------------------------------------------------------------------- */   
     if (view == UI_VIEW_INDOOR) {
-        ui_draw_printf(x, y, scale, buf, sizeof(buf), "Tmp_In:  %.1f", ambient_temp_c);
-    }
+        // '~' is replaced by '°' in 'font5x7.c (easy degree fix!)
+        ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, 
+                             "Tmp_In:  %.1f ~C", ambient_temp_c);
+    } 
     else {    
         if (shelly_valid) {
-            ui_draw_printf(x, y, scale, buf, sizeof(buf), "Tmp_Out: %.1f", shelly_temp_c);
-        }
-        else {
-            ui_draw_printf(x, y, scale, buf, sizeof(buf), "Tmp_Out: --.-");  
+            ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, 
+                                 "Tmp_Out: %.1f ~C", shelly_temp_c);
+
+        } else {
+            ui_draw_printf_padded(x, y, scale, buf, sizeof(buf), 28, 
+                                 "Tmp_Out: --.- ~C");
         }
     }
-    /* Draw raised "0" and then "C" (preserved idea from your original code) */
-    int text_width = (int)strlen(buf) * FONT_W * scale - 10;
-
-    st7789h2_draw_string_scaled_fast(x + text_width,
-                               y - (scale * 4),
-                               "0",
-                               UI_FG, UI_BG,
-                               (scale > 1) ? (scale - 1) : 1);
-
-    st7789h2_draw_string_scaled_fast(x + text_width + (FONT_W * ((scale > 1) ? (scale - 1) : 1)),
-                               y,
-                               "C",
-                               UI_FG, UI_BG,
-                               scale);
-
+    
     y += lh;
 
     /* ---------------------------------------------------------------------- */
