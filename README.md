@@ -13,7 +13,7 @@ Further work will happen on the frontend via my repo: Weather-Station-Frontend
 For practical reasons i am not using GitHubs internal deployment (Github Pages) anymore, but Cloudflare, so this 
 repo will only serve as a backup platform.
 
-@ version 0.10. Remember to setup for Components <> Bluetooth <> NimBLE only, controller on in idf.py menuconfig
+@ version 0.10. NOTE: Remember to setup for Components <> Bluetooth <> NimBLE only, controller on in idf.py menuconfig
 
 ---
 
@@ -24,7 +24,7 @@ repo will only serve as a backup platform.
 - [X] Add WiFi
 - [ ] Optional: Add proximity activation
 - [ ] Optional: Power optimation
-- [ ] Optional: Add outside temperature/humidity sensor
+- [X] Optional: Add outside temperature/humidity sensor
 
 More to come!
 
@@ -34,7 +34,7 @@ More to come!
 - v0.7 - ESP32 Weather station running with public access on: https://weather-station.kghansen123.workers.dev/
 - v0.8 - Fixed: Bosch temperature measurement to be more accurate
 - v0.9 - Fixed: Make text rendering on display instant by whole character SPI writes at a time
-- v0.10 - WIP: Adding the optional outside temperature and humidity sensor and display values locally and on webserver
+- v0.10 - Added the optional outside temperature and humidity sensor and display values locally and on webserver
 
 ---
 
