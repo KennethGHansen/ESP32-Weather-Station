@@ -638,7 +638,6 @@ static void ui_task(void *arg)
             }
             g_ui_dirty = false;
         }
-
         vTaskDelay(1);
     }
 }
@@ -791,6 +790,31 @@ static void sensor_task(void *arg)
                 portEXIT_CRITICAL(&g_lock);
 
                 g_ui_dirty = true;
+                
+                /* ------------------------------------------------
+                * Snapshot Shelly + outdoor min/max into the sample
+                * (copy-only, short critical section)
+                * ------------------------------------------------ */
+                bool    shelly_ready;
+                float   shelly_temp_c;
+                float   shelly_rh_pct;
+                uint8_t shelly_batt;
+
+                bool    out_ready;
+                float   out_tmin, out_tmax, out_rhmin, out_rhmax;
+
+                portENTER_CRITICAL(&g_lock);
+                shelly_ready  = g_shelly_valid;
+                shelly_temp_c = g_shelly_temp_c;
+                shelly_rh_pct = g_shelly_rh_pct;
+                shelly_batt   = g_shelly_batt_pct;
+
+                out_ready = g_minmax.out_valid;
+                out_tmin  = g_minmax.out_temp_min_c;
+                out_tmax  = g_minmax.out_temp_max_c;
+                out_rhmin = g_minmax.out_rh_min;
+                out_rhmax = g_minmax.out_rh_max;
+                portEXIT_CRITICAL(&g_lock);
 
                 /* ------------------------------------------------
                  * Update WIFI ring buffer (non‑blocking)
@@ -816,7 +840,16 @@ static void sensor_task(void *arg)
                 s.press_min_pa         = g_minmax.press_min_hpa;
                 s.press_max_pa         = g_minmax.press_max_hpa;
                 s.flags                = 0;
-                s.boot_id              = g_boot_id;
+                s.boot_id              = g_boot_id;  
+                s.shelly_ready         = shelly_ready;
+                s.shelly_temp_c        = shelly_temp_c;
+                s.shelly_rh_pct        = shelly_rh_pct;
+                s.shelly_batt_pct      = shelly_batt;
+                s.out_minmax_ready     = out_ready;
+                s.out_temp_min_c       = out_tmin;
+                s.out_temp_max_c       = out_tmax;
+                s.out_rh_min           = out_rhmin;
+                s.out_rh_max           = out_rhmax;
 
                 ESP_LOGI("QUEUE",
                          "pushed sample: T=%.2f RH=%.2f P=%.2f",

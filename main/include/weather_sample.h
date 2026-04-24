@@ -23,16 +23,29 @@ typedef struct
     const char *baro_forecast_text; // barometer forecast
     const char *baro_trend_text;   // e.g. "Pressure rising"
     const char *baro_storm_text;   // e.g. "Storm likely"
-    float temp_min_c;              
-    float temp_max_c;
-    float rh_min_pct;
-    float rh_max_pct;
-    float press_min_pa;
-    float press_max_pa;
+    float temp_min_c;              // inside min temp              
+    float temp_max_c;              // inside max temp
+    float rh_min_pct;              // inside min hum
+    float rh_max_pct;              // inside max hum  
+    float press_min_pa;            // pressure min
+    float press_max_pa;            // pressure max
 
     // Optional: quick health/status bitfield (0 = OK)
     uint32_t flags;
     // boot_id identifies which power-on session produced this sample.
     // It increments every reboot (persistent in NVS).
     uint32_t boot_id;
+
+    /* ---- Shelly BLU H&T (outdoor) snapshot ---- */
+    bool    shelly_ready;        /* same meaning as g_shelly_valid */
+    float   shelly_temp_c;
+    float   shelly_rh_pct;
+    uint8_t shelly_batt_pct;
+
+    /* ---- Outdoor min/max snapshot ---- */
+    bool    out_minmax_ready;    /* same meaning as g_minmax.out_valid */
+    float   out_temp_min_c;
+    float   out_temp_max_c;
+    float   out_rh_min;
+    float   out_rh_max;
 } weather_sample_t;

@@ -123,22 +123,25 @@ static bool post_sample(const weather_sample_t *s)
         (double)s->temp_c_cal
     );*/
 
-    char json[768];//JSON generation (FULL) This version sends all possible data to the web server
-    int n = snprintf(json, sizeof(json),  
+    char json[1024];//JSON generation (FULL) This version sends all possible data to the web server
+    
+    int n = snprintf(json, sizeof(json),
     "{"
     "\"ts\":%lu,"
-    "\"schema_version\":1,"         
+    "\"schema_version\":2,"
     "\"device_id\":\"%s\","
     "\"boot_id\":%lu,"
     "\"temp\":%.2f,"
     "\"hum\":%.2f,"
     "\"pressure\":%.2f,"
     "\"flags\":%lu,"
+
     "\"raw\":{"
         "\"temperature_c\":%.2f,"
         "\"pressure_pa\":%.2f,"
         "\"gas_resistance_ohm\":%.2f"
     "},"
+
     "\"derived\":{"
         "\"sea_level_pressure_pa\":%.2f,"
         "\"air_quality_ratio\":%.4f,"
@@ -155,8 +158,23 @@ static bool post_sample(const weather_sample_t *s)
             "\"press_min_pa\":%.2f,"
             "\"press_max_pa\":%.2f"
         "}"
+    "},"
+
+    "\"shelly\":{"
+        "\"ready\":%s,"
+        "\"battery_pct\":%u,"
+        "\"temperature_c\":%.2f,"
+        "\"humidity_pct\":%.2f,"
+        "\"minmax\":{"
+            "\"ready\":%s,"
+            "\"temp_min_c\":%.2f,"
+            "\"temp_max_c\":%.2f,"
+            "\"rh_min_pct\":%.2f,"
+            "\"rh_max_pct\":%.2f"
+        "}"
     "}"
-    "}",  
+
+    "}",
     (unsigned long)ts,
     device_id,
     (unsigned long)s->boot_id,
@@ -164,9 +182,11 @@ static bool post_sample(const weather_sample_t *s)
     (double)s->rh_percent_raw,
     (double)s->pressure_pa_raw,
     (unsigned long)s->flags,
+
     (double)s->temp_c_cal,
     (double)s->pressure_pa_raw,
     (double)s->gas_resistance_ohm,
+
     (double)s->slp_pa,
     (double)s->aq_ratio,
     s->aq_ready ? "true" : "false",
@@ -174,19 +194,30 @@ static bool post_sample(const weather_sample_t *s)
     s->baro_forecast_text ? s->baro_forecast_text : "",
     s->baro_trend_text ? s->baro_trend_text : "",
     s->baro_storm_text ? s->baro_storm_text : "",
+
     (double)s->temp_min_c,
     (double)s->temp_max_c,
     (double)s->rh_min_pct,
     (double)s->rh_max_pct,
     (double)s->press_min_pa,
-    (double)s->press_max_pa
-);
+    (double)s->press_max_pa,
+
+    s->shelly_ready ? "true" : "false",
+    (unsigned)s->shelly_batt_pct,
+    (double)s->shelly_temp_c,
+    (double)s->shelly_rh_pct,
+
+    s->out_minmax_ready ? "true" : "false",
+    (double)s->out_temp_min_c,
+    (double)s->out_temp_max_c,
+    (double)s->out_rh_min,
+    (double)s->out_rh_max
+    );
 
 if (n < 0 || n >= (int)sizeof(json)) {
     ESP_LOGE(TAG, "JSON snprintf failed/truncated (n=%d)", n);
     return false;
 }
-
 
     esp_http_client_config_t cfg = {
         .url = POST_URL,
