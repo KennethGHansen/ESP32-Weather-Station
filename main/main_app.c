@@ -90,14 +90,14 @@ static uint32_t g_boot_id = 0;
  */
 #define I2C_PORT I2C_NUM_0
 #define I2C_SDA_GPIO GPIO_NUM_8
-#define I2C_SCL_GPIO GPIO_NUM_9
+#define I2C_SCL_GPIO GPIO_NUM_9                                                                                                                           
 #define I2C_FREQ_HZ 400000
 
 /**
  * Temperature offset for better ambient temperature
  * (experience showed that -3C works for me)
  */
-#define BOARD_TEMP_OFFSET_C (-4.0f)
+#define BOARD_TEMP_OFFSET_C (-1.5f)
 
 /**
  * Joystick pins
@@ -946,7 +946,7 @@ void app_main(void)
                                          I2C_SDA_GPIO,
                                          I2C_SCL_GPIO,
                                          I2C_FREQ_HZ,
-                                         0x77));
+                                         0x76));
 
     bme68x_esp32_configure_default(&g_sensor);
 
