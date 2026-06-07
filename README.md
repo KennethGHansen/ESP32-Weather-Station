@@ -45,4 +45,7 @@ More to come!
 
 ---
 
+## Photos
+<img width="1908" height="4032" alt="20260607_101715" src="https://github.com/user-attachments/assets/187a075b-6cb7-4310-bb10-c1d3779c4b8c" />
+<img width="1908" height="4032" alt="20260607_101705" src="https://github.com/user-attachments/assets/29d5a3eb-6a3c-4c51-bf5a-4b4b573e73d3" />
 
