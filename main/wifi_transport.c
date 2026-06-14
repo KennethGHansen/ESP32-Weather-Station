@@ -298,7 +298,9 @@ static void wifi_transport_task(void *arg)
 
         /* Try sending pending sample */
         if (post_sample(&pending)) {
+
             ESP_LOGI("MON_NET", "sample sent successfully");
+
             have_pending = false;
 
             /* If queue is now empty, back off */
@@ -307,6 +309,18 @@ static void wifi_transport_task(void *arg)
             } else {
                 vTaskDelay(pdMS_TO_TICKS(200));
             }
+
+        } else {
+
+        /* ------------------------------------------------------------------
+        * IMPORTANT:
+        * Prevent tight retry loop on failure
+        *
+        * Without this delay:
+        * - rapid retry may stress TCP stack
+        * - can lead to stuck socket / bad state
+        * ------------------------------------------------------------------ */
+        vTaskDelay(pdMS_TO_TICKS(2000));
         }
     }
 }
