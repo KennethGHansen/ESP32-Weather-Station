@@ -26,8 +26,6 @@ repo will only serve as a backup platform.
 - [ ] Optional: Power optimation
 - [X] Optional: Add outside temperature/humidity sensor
 
-More to come!
-
 ---
 
 ## Working revision
